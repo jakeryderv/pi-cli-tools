@@ -1746,7 +1746,7 @@ export function formatCliToolsDiagnostics(
 		...state.registry.definitions.flatMap(({ definition }) =>
 			definition.docs.official.map(
 				(source) =>
-					`  ${definition.id}/${source.id}: ${new URL(source.url).origin}; media=${source.media}; alignment=${source.alignment.mode}`,
+					`  ${definition.id}/${source.id}: ${formatUrlOrigin(source.url)}; media=${source.media}; alignment=${source.alignment.mode}`,
 			),
 		),
 		...(officialDiagnostics
@@ -2177,6 +2177,14 @@ function formatModelSpoolNotice(kind: "Complete" | "Partial", path: string): str
 
 function clipDiagnosticValue(value: string): string {
 	return clipUtf8(normalizeSingleLine(value), MAX_DIAGNOSTIC_VALUE_BYTES);
+}
+
+function formatUrlOrigin(value: string): string {
+	try {
+		return new URL(value).origin;
+	} catch {
+		return "[invalid URL]";
+	}
 }
 
 function clipUtf8(value: string, maxBytes: number): string {

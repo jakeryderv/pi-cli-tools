@@ -644,7 +644,7 @@ function createProvenance(
 		configuredUrl: document.configuredUrl,
 		finalUrl: document.finalUrl,
 		redirects: [...document.redirects],
-		domain: new URL(document.finalUrl).hostname,
+		domain: parseUrlHostname(document.finalUrl),
 		mediaType: document.mediaType,
 		cache: document.cache,
 		retrievedAt: document.retrievedAt,
@@ -652,6 +652,14 @@ function createProvenance(
 		textSha256: document.textSha256,
 		alignment: alignmentValue,
 	};
+}
+
+function parseUrlHostname(value: string): string {
+	try {
+		return new URL(value).hostname;
+	} catch (error) {
+		throw new Error("Official documentation transport returned an invalid final URL", { cause: error });
+	}
 }
 
 function decodeUtf8(body: Uint8Array): string {
