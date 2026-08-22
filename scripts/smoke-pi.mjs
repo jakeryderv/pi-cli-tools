@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,7 @@ try {
 	if (JSON.stringify(marker.args) !== JSON.stringify(["literal arg", "$(not-a-shell)", ""])) {
 		throw new Error(`Native tool changed argv: ${JSON.stringify(marker.args)}`);
 	}
-	if (marker.cwd !== cwd || marker.sentinel !== "inherited") {
+	if (marker.cwd !== (await realpath(cwd)) || marker.sentinel !== "inherited") {
 		throw new Error(`Native tool policy mapping failed: ${JSON.stringify(marker)}`);
 	}
 	if (result.details?.adapter !== "pi-cli-tools" || result.details.kind !== "execution") {
