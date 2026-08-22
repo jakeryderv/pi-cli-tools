@@ -1,0 +1,62 @@
+{
+	"name": "pi-cli-tools",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Register standalone command-line programs as native Pi tools with bounded execution and on-demand documentation.",
+	"type": "module",
+	"license": "MIT",
+	"author": "Jake Van Slyke",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jakeryderv/pi-cli-tools.git"
+	},
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"cli",
+		"agent-tools"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"packageManager": "npm@11.9.0",
+	"files": [
+		"extensions",
+		"src",
+		"tools"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/cli-tools.ts"
+		]
+	},
+	"scripts": {
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"lint": "eslint . --max-warnings 0",
+		"lint:docs": "markdownlint-cli2",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"pack:check": "node scripts/check-package.mjs",
+		"security:audit": "npm audit --omit=dev --audit-level=high",
+		"smoke:pi": "pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --extension . --list-models __pi_cli_tools_smoke__",
+		"check": "npm run format:check && npm run lint && npm run lint:docs && npm run typecheck && npm run test && npm run pack:check",
+		"prepublishOnly": "npm run check"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.2",
+		"@eslint/js": "10.0.1",
+		"@types/node": "22.20.1",
+		"eslint": "10.9.0",
+		"globals": "17.11.0",
+		"markdownlint-cli2": "0.23.2",
+		"prettier": "3.9.6",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.67.0",
+		"vitest": "4.1.11"
+	}
+}

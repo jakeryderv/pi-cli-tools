@@ -1,2 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build and test output
+coverage/
+dist/
+*.tsbuildinfo
+
+# Package artifacts
+*.tgz
+
+# Local caches and temporary files
+.cache/
+.tmp/
+tmp/
+*.log
+
+# Environment and credentials
 .env
+.env.*
+!.env.example
 .envrc
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
