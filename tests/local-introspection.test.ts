@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -644,7 +644,11 @@ describePosix("local introspection service", () => {
 		await mkdir(otherCwd);
 		const changedCwd = await service.inspect({ discovery, cwd: otherCwd });
 		expect(changedCwd.documentation).toMatchObject({ status: "ok", cache: "miss" });
-		expect((await invocations(logPath)).map(({ cwd }) => cwd)).toEqual([root, root, otherCwd]);
+		expect((await invocations(logPath)).map(({ cwd }) => cwd)).toEqual([
+			await realpath(root),
+			await realpath(root),
+			await realpath(otherCwd),
+		]);
 		await service.close();
 
 		const emptyEnvironmentDefinition: RegistryDefinition = {
