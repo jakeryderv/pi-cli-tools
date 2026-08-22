@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -165,8 +165,8 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		if (firstDetails.kind !== "execution" || secondDetails.kind !== "execution") {
 			throw new Error("expected execution details");
 		}
-		expect(firstDetails.execution.executablePath).toBe(join(firstCwd, "bin", "fixture-cli"));
-		expect(secondDetails.execution.executablePath).toBe(join(secondCwd, "bin", "fixture-cli"));
+		expect(firstDetails.execution.executablePath).toBe(await realpath(join(firstCwd, "bin", "fixture-cli")));
+		expect(secondDetails.execution.executablePath).toBe(await realpath(join(secondCwd, "bin", "fixture-cli")));
 		expect(firstDetails.execution).toMatchObject({ cwd: firstCwd, stdout: "first" });
 		expect(secondDetails.execution).toMatchObject({ cwd: secondCwd, stdout: "second" });
 	});

@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -359,7 +359,7 @@ describePosix("registered runner adaptation", () => {
 		};
 
 		expect(payload.args).toEqual(literalArgs);
-		expect(payload.cwd).toBe(root);
+		expect(payload.cwd).toBe(await realpath(root));
 		expect(payload.environment).toEqual({});
 		expect(details.execution).toMatchObject({
 			status: "exited",
