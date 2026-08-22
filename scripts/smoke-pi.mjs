@@ -211,11 +211,12 @@ try {
 		);
 	}
 	await docs.execute("smoke-rg-docs-cached", { tool: "cli_rg" }, undefined, undefined, { cwd });
-	if (
-		(await readJsonLines(introspectionMarkerPaths["rg:version"])).length !== 1 ||
-		(await readJsonLines(introspectionMarkerPaths["rg:help"])).length !== 2 ||
-		(await readJsonLines(manMarkerPath)).length !== 1
-	) {
+	const [cachedRgVersionRecords, cachedRgHelpRecords, cachedManRecords] = await Promise.all([
+		readJsonLines(introspectionMarkerPaths["rg:version"]),
+		readJsonLines(introspectionMarkerPaths["rg:help"]),
+		readJsonLines(manMarkerPath),
+	]);
+	if (cachedRgVersionRecords.length !== 1 || cachedRgHelpRecords.length !== 2 || cachedManRecords.length !== 1) {
 		throw new Error("cli_docs cache isolation failed for the rg man fallback");
 	}
 
@@ -240,8 +241,13 @@ try {
 }
 
 async function readJsonLines(path) {
-	return (await readFile(path, "utf8"))
-		.split("\n")
-		.filter(Boolean)
-		.map((line) => JSON.parse(line));
+	const content = await readFile(path, "utf8");
+	const lines = content.split("\n").filter(Boolean);
+	return lines.map((line, index) => {
+		try {
+			return JSON.parse(line);
+		} catch (error) {
+			throw new Error(`Invalid JSON line in ${path} at record ${String(index + 1)}`, { cause: error });
+		}
+	});
 }
