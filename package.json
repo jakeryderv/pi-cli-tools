@@ -2,7 +2,7 @@
 	"name": "pi-cli-tools",
 	"version": "0.0.0",
 	"private": true,
-	"description": "Register standalone command-line programs as native Pi tools with bounded execution and on-demand documentation.",
+	"description": "Register standalone command-line programs as native Pi tools with bounded, shell-free execution.",
 	"type": "module",
 	"license": "MIT",
 	"author": "Jake Van Slyke",
@@ -40,16 +40,19 @@
 		"test:watch": "vitest",
 		"pack:check": "node scripts/check-package.mjs",
 		"security:audit": "npm audit --omit=dev --audit-level=high",
-		"smoke:pi": "pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --extension . --list-models __pi_cli_tools_smoke__ && pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --extension . --print /cli-tools",
+		"smoke:pi": "node scripts/smoke-pi.mjs",
 		"check": "npm run format:check && npm run lint && npm run lint:docs && npm run typecheck && npm run test && npm run pack:check",
 		"prepublishOnly": "npm run check"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
 	"devDependencies": {
+		"@earendil-works/pi-ai": "0.84.2",
 		"@earendil-works/pi-coding-agent": "0.84.2",
+		"@earendil-works/pi-tui": "0.84.2",
 		"@eslint/js": "10.0.1",
 		"@types/node": "22.20.1",
 		"eslint": "10.9.0",

@@ -28,6 +28,7 @@ const expectedFiles = new Set([
 	"LICENSE",
 	"README.md",
 	"extensions/cli-tools.ts",
+	"extensions/pi-adapter.ts",
 	"package.json",
 	"src/errors.ts",
 	"src/introspect.ts",
@@ -46,6 +47,16 @@ for (const expectedFile of expectedFiles) {
 }
 for (const packagedFile of packagedFiles) {
 	if (!expectedFiles.has(packagedFile)) throw new Error(`Unexpected package file was included: ${packagedFile}`);
+}
+
+const packageManifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+for (const peer of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+	if (packageManifest.peerDependencies?.[peer] !== "*") {
+		throw new Error(`Pi host package must be a wildcard peer dependency: ${peer}`);
+	}
+}
+if (packageManifest.dependencies?.yaml !== "2.9.0") {
+	throw new Error("The YAML runtime dependency must be present in production dependencies");
 }
 
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");

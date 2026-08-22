@@ -2,11 +2,12 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import Value from "typebox/value";
-import { parseDocument } from "yaml";
+import { isMap, isScalar, parseDocument, type Document } from "yaml";
 
 import {
 	DisabledRegistryEntrySchema,
 	RegistryDefinitionSchema,
+	RegistryIdSchema,
 	type DisabledRegistryEntry,
 	type LoadedDisabledEntry,
 	type LoadedRegistryDefinition,
@@ -16,6 +17,7 @@ import {
 	type RegistryLayer,
 	type RegistryLayerSummary,
 	type RegistryLoadResult,
+	type QuarantinedRegistryId,
 	type RegistrySource,
 } from "./types.js";
 
@@ -32,6 +34,7 @@ interface ParsedEntry {
 interface ParsedLayer {
 	entries: ParsedEntry[];
 	issues: RegistryIssue[];
+	invalidIds: Map<string, string[]>;
 	summary: RegistryLayerSummary;
 }
 
@@ -41,6 +44,7 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 	const disabled = new Map<string, LoadedDisabledEntry>();
 	const issues: RegistryIssue[] = [];
 	const summaries: RegistryLayerSummary[] = [];
+	const quarantined = new Map<string, QuarantinedRegistryId>();
 
 	for (const layer of layers) {
 		const parsed = await parseLayer(layer);
@@ -48,7 +52,10 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 		summaries.push(parsed.summary);
 
 		const entriesById = groupBy(parsed.entries, ({ entry }) => entry.id);
-		for (const [id, entries] of entriesById) {
+		const touchedIds = new Set([...entriesById.keys(), ...parsed.invalidIds.keys()]);
+		for (const id of touchedIds) {
+			const entries = entriesById.get(id) ?? [];
+			const invalidPaths = parsed.invalidIds.get(id) ?? [];
 			if (entries.length > 1) {
 				issues.push({
 					code: "duplicate_id",
@@ -57,11 +64,21 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 						.map(({ source }) => source.path)
 						.join(", ")}`,
 				});
+			}
+
+			if (entries.length > 1 || invalidPaths.length > 0) {
+				quarantined.set(id, {
+					id,
+					layer: layer.name,
+					paths: [...new Set([...entries.map(({ source }) => source.path), ...invalidPaths])].sort(compareStrings),
+					reason: entries.length > 1 ? "duplicate_id" : "invalid_override",
+				});
 				continue;
 			}
 
 			const parsedEntry = entries[0];
 			if (!parsedEntry) continue;
+			quarantined.delete(id);
 
 			if (isDisabledEntry(parsedEntry.entry)) {
 				definitions.delete(id);
@@ -80,7 +97,8 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 		}
 	}
 
-	const conflictingIds = findToolNameConflicts(definitions, issues);
+	const executableDefinitions = new Map([...definitions].filter(([id]) => !quarantined.has(id)));
+	const conflictingIds = findToolNameConflicts(executableDefinitions, issues);
 	const mergedDefinitions = [...definitions.values()]
 		.filter(({ definition }) => !conflictingIds.has(definition.id))
 		.sort(compareDefinitionIds);
@@ -88,6 +106,7 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 	return {
 		definitions: mergedDefinitions,
 		disabled: [...disabled.values()].sort((left, right) => compareStrings(left.entry.id, right.entry.id)),
+		quarantined: [...quarantined.values()].sort((left, right) => compareStrings(left.id, right.id)),
 		issues,
 		layers: summaries,
 	};
@@ -95,6 +114,7 @@ export async function loadRegistry(layers: readonly RegistryLayer[]): Promise<Re
 
 async function parseLayer(layer: RegistryLayer): Promise<ParsedLayer> {
 	const issues: RegistryIssue[] = [];
+	const invalidIds = new Map<string, string[]>();
 	let directoryEntries;
 
 	try {
@@ -114,6 +134,7 @@ async function parseLayer(layer: RegistryLayer): Promise<ParsedLayer> {
 		return {
 			entries: [],
 			issues,
+			invalidIds,
 			summary: createLayerSummary(layer, false, []),
 		};
 	}
@@ -139,11 +160,17 @@ async function parseLayer(layer: RegistryLayer): Promise<ParsedLayer> {
 		const parsed = await parseRegistryFile(layer, path);
 		issues.push(...parsed.issues);
 		if (parsed.entry) entries.push(parsed.entry);
+		if (parsed.invalidId) {
+			const paths = invalidIds.get(parsed.invalidId);
+			if (paths) paths.push(path);
+			else invalidIds.set(parsed.invalidId, [path]);
+		}
 	}
 
 	return {
 		entries,
 		issues,
+		invalidIds,
 		summary: createLayerSummary(layer, true, files),
 	};
 }
@@ -151,7 +178,7 @@ async function parseLayer(layer: RegistryLayer): Promise<ParsedLayer> {
 async function parseRegistryFile(
 	layer: RegistryLayer,
 	path: string,
-): Promise<{ entry?: ParsedEntry; issues: RegistryIssue[] }> {
+): Promise<{ entry?: ParsedEntry; invalidId?: string; issues: RegistryIssue[] }> {
 	const source = { layer: layer.name, path };
 	let contents: string;
 
@@ -179,8 +206,10 @@ async function parseRegistryFile(
 	}
 
 	const document = parseDocument(contents, { uniqueKeys: true });
+	const recoverableId = getUnambiguousDocumentRegistryId(document);
 	if (document.errors.length > 0) {
 		return {
+			...(recoverableId ? { invalidId: recoverableId } : {}),
 			issues: [
 				createFileIssue("yaml_parse_error", layer, path, document.errors.map(({ message }) => message).join("; ")),
 			],
@@ -188,6 +217,7 @@ async function parseRegistryFile(
 	}
 	if (document.warnings.length > 0) {
 		return {
+			...(recoverableId ? { invalidId: recoverableId } : {}),
 			issues: [
 				createFileIssue("yaml_warning", layer, path, document.warnings.map(({ message }) => message).join("; ")),
 			],
@@ -199,20 +229,23 @@ async function parseRegistryFile(
 		value = document.toJS({ maxAliasCount: 100 });
 	} catch (error) {
 		return {
+			...(recoverableId ? { invalidId: recoverableId } : {}),
 			issues: [createFileIssue("yaml_parse_error", layer, path, `Unable to convert YAML: ${getErrorMessage(error)}`)],
 		};
 	}
 
 	const parsed = parseRegistryEntry(value);
 	if ("errors" in parsed) {
+		const invalidId = getValidRegistryId(value);
 		return {
+			...(invalidId ? { invalidId } : {}),
 			issues: [createFileIssue("invalid_definition", layer, path, parsed.errors.join("; "))],
 		};
 	}
 
 	if (!isDisabledEntry(parsed.entry)) {
 		const customIssue = validateDefinition(parsed.entry, layer, path);
-		if (customIssue) return { issues: [customIssue] };
+		if (customIssue) return { invalidId: parsed.entry.id, issues: [customIssue] };
 	}
 
 	return {
@@ -319,6 +352,20 @@ function isDisabledEntry(entry: RegistryEntry): entry is DisabledRegistryEntry {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getValidRegistryId(value: unknown): string | undefined {
+	if (!isRecord(value) || !Value.Check(RegistryIdSchema, value.id)) return undefined;
+	return Value.Parse(RegistryIdSchema, value.id);
+}
+
+function getUnambiguousDocumentRegistryId(document: Document.Parsed): string | undefined {
+	if (!isMap(document.contents)) return undefined;
+	const idPairs = document.contents.items.filter(({ key }) => isScalar(key) && key.value === "id");
+	if (idPairs.length !== 1) return undefined;
+	const value = idPairs[0]?.value;
+	if (!isScalar(value) || !Value.Check(RegistryIdSchema, value.value)) return undefined;
+	return Value.Parse(RegistryIdSchema, value.value);
 }
 
 function isErrorCode(error: unknown, code: string): error is NodeJS.ErrnoException {

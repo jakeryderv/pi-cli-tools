@@ -3,7 +3,7 @@ import type { Static } from "typebox";
 
 import { CLI_MAX_ARGUMENT_BYTES, CLI_MAX_ARGUMENT_COUNT, CLI_MAX_TIMEOUT_MS, CLI_MIN_TIMEOUT_MS } from "./limits.js";
 
-const RegistryIdSchema = Type.String({
+export const RegistryIdSchema = Type.String({
 	minLength: 1,
 	maxLength: 64,
 	pattern: "^[a-z][a-z0-9_-]*$",
@@ -162,9 +162,19 @@ export interface RegistryLayerSummary {
 	files: string[];
 }
 
+/** An ambiguous higher-precedence ID which adapters must withhold from execution. */
+export interface QuarantinedRegistryId {
+	id: string;
+	layer: string;
+	paths: string[];
+	reason: "duplicate_id" | "invalid_override";
+}
+
 export interface RegistryLoadResult {
 	definitions: LoadedRegistryDefinition[];
 	disabled: LoadedDisabledEntry[];
+	/** Definitions remain diagnostic-visible, but IDs listed here are not executable. */
+	quarantined: QuarantinedRegistryId[];
 	issues: RegistryIssue[];
 	layers: RegistryLayerSummary[];
 }

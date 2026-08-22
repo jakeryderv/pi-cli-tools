@@ -53,4 +53,14 @@ Pi extensions run with the user's full system permissions. A configured CLI may 
 
 Shell-free invocation, timeouts, cancellation, output limits, and private capped spooling are defense-in-depth measures. They are not a sandbox and do not establish that a CLI command is safe or non-destructive.
 
-Registry definitions are trusted configuration. The v0.1b Pi extension does not register native executable tools yet. Future project-local definitions must not be read until Pi has established project trust.
+Registry definitions are trusted configuration. The v0.1c Pi adapter registers an executable tool only after `session_start`, only when discovery resolved an executable on Linux or macOS, and only when the tool name did not collide with a Pi tool visible during registration preflight. Pi exposes no unregister operation or conflict result, so a privileged extension loaded later can still attempt to register the same name; the adapter's guarantee is narrowly that it never overrides an owner visible at its preflight snapshot.
+
+The generic model contract contains only `{ args: string[] }`. Executable path, cwd, timeout, environment policy, stdin, shell text, and spool controls are not model-selectable. Pi extensions may mutate validated tool arguments in `tool_call` handlers without revalidation, so the runner remains the final pre-spawn authority for argument type, NUL, count, per-item byte, and combined byte limits.
+
+Registry issues remain human-facing. Duplicate or attributable invalid higher-layer IDs quarantine matching lower definitions from executable registration so a malformed attempted override or tombstone cannot unexpectedly leave a bundled CLI callable. Unattributable malformed files do not suppress unrelated definitions.
+
+CLI stdout and stderr are untrusted reference data. The adapter removes terminal control and problematic formatting characters from model-visible text, preserves stream labels, and enforces a final 50 KiB/2,000-line bound including framing. Serializable tool details preserve the runner outcome for Pi rendering and diagnostics; these details and bounded model-facing output are persisted in Pi session history. Session exports or shared session files can therefore disclose credentials or other sensitive CLI output.
+
+Cleanup metadata is conditional: results with no retained paths mark cleanup as not applicable, while results with retained output identify `pi-cli-tools` as the owner until explicit cleanup. v0.1c does not reconstruct or automatically delete paths from imported session data or during session shutdown. Embedding hosts can call `removeCliOutputSpool()` with the live result, and users can explicitly remove a disclosed spool path. Failed spools warn when partial sidecar artifacts remain. Process crashes and forced termination can leave orphaned package-owned temporary directories; per-invocation and aggregate quotas remain fallback bounds.
+
+Project-local registry definitions are not implemented. Any future project-local definitions must not be read until Pi has established project trust.

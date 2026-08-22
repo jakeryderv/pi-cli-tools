@@ -1,0 +1,291 @@
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	ModelRuntime,
+	SessionManager,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import Type from "typebox";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stringify } from "yaml";
+
+import cliToolsExtension from "../extensions/cli-tools.js";
+import type { CliToolResultDetails } from "../extensions/pi-adapter.js";
+import { fixturePath } from "./helpers/runner.js";
+import { createDefinition } from "./helpers/pi-adapter.js";
+
+const describePosix = process.platform === "linux" || process.platform === "darwin" ? describe : describe.skip;
+
+describePosix("real Pi lifecycle", () => {
+	let root: string;
+	let agentDirectory: string;
+	let binDirectory: string;
+
+	beforeEach(async () => {
+		root = await mkdtemp(join(tmpdir(), "pi-cli-tools-real-lifecycle-"));
+		agentDirectory = join(root, "agent");
+		binDirectory = join(root, "bin");
+		await mkdir(join(agentDirectory, "cli-tools"), { recursive: true });
+		await mkdir(binDirectory);
+		await symlink(process.execPath, join(binDirectory, "fixture-cli"));
+		await writeFile(
+			join(agentDirectory, "cli-tools", "github.yaml"),
+			stringify(createDefinition("github", "cli_gh", { binary: { candidates: ["fixture-cli"] } })),
+			"utf8",
+		);
+		vi.stubEnv("PI_CODING_AGENT_DIR", agentDirectory);
+		vi.stubEnv("PATH", binDirectory);
+	});
+
+	afterEach(async () => {
+		vi.unstubAllEnvs();
+		await rm(root, { force: true, recursive: true });
+	});
+
+	it("loads with an uninitialized runtime, then registers and executes after session_start", async () => {
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await expect(loader.reload()).resolves.toBeUndefined();
+		expect(loader.getExtensions().errors).toEqual([]);
+		expect(loader.getExtensions().extensions[0]?.tools.size).toBe(0);
+
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			expect(session.getToolDefinition("cli_gh")).toBeUndefined();
+			const lifecycleErrors: string[] = [];
+			await session.bindExtensions({
+				mode: "print",
+				onError: (error) => lifecycleErrors.push(`${error.event}: ${error.error}`),
+			});
+
+			expect(lifecycleErrors).toEqual([]);
+			expect(session.getActiveToolNames()).toContain("cli_gh");
+			expect(session.getAllTools().find(({ name }) => name === "cli_gh")?.sourceInfo.source).toBe("inline");
+			const tool = session.getToolDefinition("cli_gh");
+			if (!tool) throw new Error("expected cli_gh definition after session_start");
+			const result = await tool.execute("real-pi", { args: [fixturePath, "exit", "0"] }, undefined, undefined, {
+				cwd: root,
+			} as ExtensionContext);
+			const details = result.details as CliToolResultDetails;
+			expect(details.kind === "execution" && details.execution.status).toBe("exited");
+			expect(details.kind === "execution" && details.execution.exitCode).toBe(0);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("executes through Pi's provider/tool pipeline and preserves nonzero error classification", async () => {
+		const faux = fauxProvider({ provider: "pi-cli-tools-test" });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("cli_gh", { args: [fixturePath, "exit", "7"] }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("finished"),
+		]);
+		const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false });
+		modelRuntime.registerNativeProvider(faux.provider);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			model: faux.getModel(),
+			modelRuntime,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		const completedTools: { toolName: string; isError: boolean; details: unknown }[] = [];
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type === "tool_execution_end") {
+				const result = event.result as { details?: unknown };
+				completedTools.push({
+					toolName: event.toolName,
+					isError: event.isError,
+					details: result.details,
+				});
+			}
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			await session.prompt("Run the configured fixture.");
+
+			expect(faux.state.callCount).toBe(2);
+			expect(completedTools).toHaveLength(1);
+			expect(completedTools[0]).toMatchObject({
+				toolName: "cli_gh",
+				isError: true,
+				details: {
+					adapter: "pi-cli-tools",
+					kind: "execution",
+					registryId: "github",
+					execution: { status: "exited", exitCode: 7 },
+				},
+			});
+			const toolResult = session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "cli_gh",
+			);
+			expect(toolResult).toMatchObject({ role: "toolResult", isError: true });
+		} finally {
+			unsubscribe();
+			session.dispose();
+		}
+	});
+
+	it("reloads through the public session lifecycle when an executable appears or disappears", async () => {
+		await writeFile(
+			join(agentDirectory, "cli-tools", "github.yaml"),
+			stringify(createDefinition("github", "cli_gh", { binary: { candidates: ["reload-cli"] } })),
+			"utf8",
+		);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		const reloadPath = join(binDirectory, "reload-cli");
+		try {
+			const lifecycleErrors: string[] = [];
+			await session.bindExtensions({
+				mode: "print",
+				onError: (error) => lifecycleErrors.push(error.error),
+			});
+			expect(session.getToolDefinition("cli_gh")).toBeUndefined();
+
+			await symlink(process.execPath, reloadPath);
+			await session.reload();
+			expect(session.getToolDefinition("cli_gh")).toBeDefined();
+			expect(session.getActiveToolNames()).toContain("cli_gh");
+
+			await rm(reloadPath);
+			await session.reload();
+			expect(session.getToolDefinition("cli_gh")).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("cli_gh");
+			expect(lifecycleErrors).toEqual([]);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("does not override a tool registered by an earlier extension", async () => {
+		const earlierTool: ToolDefinition = {
+			name: "cli_gh",
+			label: "Earlier owner",
+			description: "Earlier test tool",
+			parameters: Type.Object({}),
+			execute() {
+				return Promise.resolve({ content: [{ type: "text", text: "earlier" }], details: {} });
+			},
+		};
+		const loader = createLoader([
+			{
+				name: "earlier",
+				factory(pi) {
+					pi.registerTool(earlierTool);
+				},
+			},
+			{ name: "pi-cli-tools", factory: cliToolsExtension },
+		]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			expect(session.getToolDefinition("cli_gh")?.label).toBe("Earlier owner");
+			const adapterExtension = loader.getExtensions().extensions.find(({ path }) => path.includes("pi-cli-tools"));
+			expect(adapterExtension?.tools.size).toBe(0);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("reports ownership changes caused by a later dynamic registration from an earlier extension", async () => {
+		const lateTool: ToolDefinition = {
+			name: "cli_gh",
+			label: "Late owner",
+			description: "Late test owner",
+			parameters: Type.Object({}),
+			execute() {
+				return Promise.resolve({ content: [{ type: "text", text: "late" }], details: {} });
+			},
+		};
+		const loader = createLoader([
+			{
+				name: "earlier-late-owner",
+				factory(pi) {
+					pi.on("resources_discover", () => {
+						pi.registerTool(lateTool);
+					});
+				},
+			},
+			{ name: "pi-cli-tools", factory: cliToolsExtension },
+		]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			expect(session.getToolDefinition("cli_gh")?.label).toBe("Late owner");
+			const adapterExtension = loader.getExtensions().extensions.find(({ path }) => path.includes("pi-cli-tools"));
+			const command = adapterExtension?.commands.get("cli-tools");
+			if (!command) throw new Error("expected adapter diagnostics command");
+			let notification = "";
+			let severity = "";
+			await command.handler("", {
+				ui: {
+					notify(message: string, type: string) {
+						notification = message;
+						severity = type;
+					},
+				},
+			} as unknown as ExtensionCommandContext);
+			expect(severity).toBe("warning");
+			expect(notification).toContain("Ownership changes: 1");
+			expect(notification).toContain("[ownership_changed]");
+			expect(notification).toContain("earlier-late-owner");
+		} finally {
+			session.dispose();
+		}
+	});
+
+	function createLoader(
+		extensionFactories: NonNullable<ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]>,
+	) {
+		return new DefaultResourceLoader({
+			cwd: root,
+			agentDir: agentDirectory,
+			extensionFactories,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+	}
+});
