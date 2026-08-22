@@ -17,9 +17,11 @@ introspection:
     args: [--version]
   help:
     args: [--help]
-  subcommand_help:
-    append_args: [--help]
-  man: false
+  man:
+    binary:
+      candidates: [man]
+    args: [gh]
+    timeout_ms: 10000
 
 docs:
   official:

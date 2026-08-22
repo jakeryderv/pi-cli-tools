@@ -40,7 +40,7 @@ describe("cli-tools extension factory", () => {
 		expect(getAllTools).not.toHaveBeenCalled();
 		expect(getActiveTools).not.toHaveBeenCalled();
 		expect(registerTool).not.toHaveBeenCalled();
-		expect(on.mock.calls.map(([event]) => event)).toEqual(["session_start", "tool_result"]);
+		expect(on.mock.calls.map(([event]) => event)).toEqual(["session_start", "tool_result", "session_shutdown"]);
 		expect(registerCommand).toHaveBeenCalledOnce();
 		expect(registerCommand).toHaveBeenCalledWith(
 			"cli-tools",

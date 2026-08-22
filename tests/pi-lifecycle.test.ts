@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -18,7 +18,7 @@ import { stringify } from "yaml";
 
 import cliToolsExtension from "../extensions/cli-tools.js";
 import type { CliToolResultDetails } from "../extensions/pi-adapter.js";
-import { fixturePath } from "./helpers/runner.js";
+import { expectProcessGone, fixturePath, waitForFile } from "./helpers/runner.js";
 import { createDefinition } from "./helpers/pi-adapter.js";
 
 const describePosix = process.platform === "linux" || process.platform === "darwin" ? describe : describe.skip;
@@ -82,6 +82,120 @@ describePosix("real Pi lifecycle", () => {
 			const details = result.details as CliToolResultDetails;
 			expect(details.kind === "execution" && details.execution.status).toBe("exited");
 			expect(details.kind === "execution" && details.execution.exitCode).toBe(0);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("registers cli_docs lazily and resets its in-memory cache across public reload", async () => {
+		await writeFile(
+			join(agentDirectory, "cli-tools", "github.yaml"),
+			stringify(
+				createDefinition("github", "cli_gh", {
+					binary: { candidates: ["fixture-cli"] },
+					introspection: {
+						version: {
+							args: [fixturePath, "streams", Buffer.from("real version").toString("base64")],
+						},
+						help: {
+							args: [fixturePath, "streams", Buffer.from("real help").toString("base64")],
+						},
+						man: false,
+					},
+				}),
+			),
+			"utf8",
+		);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			const lifecycleErrors: unknown[] = [];
+			await session.bindExtensions({ mode: "print", onError: (error) => lifecycleErrors.push(error) });
+			const docs = session.getToolDefinition("cli_docs");
+			if (!docs) throw new Error("expected cli_docs");
+			const first = await docs.execute("first", { tool: "cli_gh" }, undefined, undefined, {
+				cwd: root,
+			} as ExtensionContext);
+			const second = await docs.execute("second", { tool: "cli_gh" }, undefined, undefined, {
+				cwd: root,
+			} as ExtensionContext);
+			expect(first.details).toMatchObject({
+				kind: "docs",
+				status: "ok",
+				version: { cache: "miss" },
+				documentation: { cache: "miss" },
+			});
+			expect(second.details).toMatchObject({
+				kind: "docs",
+				version: { cache: "hit" },
+				documentation: { cache: "hit" },
+			});
+
+			await session.reload();
+			expect(lifecycleErrors).toEqual([]);
+			const reloadedDocs = session.getToolDefinition("cli_docs");
+			if (!reloadedDocs) throw new Error("expected reloaded cli_docs");
+			const reloaded = await reloadedDocs.execute("reloaded", { tool: "cli_gh" }, undefined, undefined, {
+				cwd: root,
+			} as ExtensionContext);
+			expect(reloaded.details).toMatchObject({
+				kind: "docs",
+				version: { cache: "miss" },
+				documentation: { cache: "miss" },
+			});
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("awaits blocked introspection cleanup before public reload completes", async () => {
+		const readyPath = join(root, "blocked-introspection.pid");
+		await writeFile(
+			join(agentDirectory, "cli-tools", "github.yaml"),
+			stringify(
+				createDefinition("github", "cli_gh", {
+					binary: { candidates: ["fixture-cli"] },
+					introspection: {
+						help: { args: [fixturePath, "bytes-wait", "1", readyPath] },
+						man: false,
+					},
+				}),
+			),
+			"utf8",
+		);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			const docs = session.getToolDefinition("cli_docs");
+			if (!docs) throw new Error("expected cli_docs");
+			const pending = docs.execute("blocked", { tool: "cli_gh" }, undefined, undefined, {
+				cwd: root,
+			} as ExtensionContext);
+			await waitForFile(readyPath);
+			const pid = Number(await readFile(readyPath, "utf8"));
+			await session.reload();
+			const result = await pending;
+			expect(result.details).toMatchObject({
+				kind: "docs",
+				status: "failed",
+				documentation: { status: "failed", code: "cancelled" },
+			});
+			await expectProcessGone(pid);
 		} finally {
 			session.dispose();
 		}
@@ -318,7 +432,7 @@ describePosix("real Pi lifecycle", () => {
 			await session.bindExtensions({ mode: "print" });
 			expect(session.getToolDefinition("cli_gh")?.label).toBe("Earlier owner");
 			const adapterExtension = loader.getExtensions().extensions.find(({ path }) => path.includes("pi-cli-tools"));
-			expect([...(adapterExtension?.tools.keys() ?? [])]).toEqual(["cli_rg"]);
+			expect([...(adapterExtension?.tools.keys() ?? [])]).toEqual(["cli_rg", "cli_docs"]);
 		} finally {
 			session.dispose();
 		}

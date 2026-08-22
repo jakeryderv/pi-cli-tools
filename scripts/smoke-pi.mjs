@@ -13,6 +13,13 @@ const agentDir = join(root, "agent");
 const binDir = join(cwd, "bin");
 const consumerDir = join(root, "consumer");
 const markerPaths = { gh: join(root, "gh-invoked.json"), rg: join(root, "rg-invoked.json") };
+const manMarkerPath = join(root, "man-invoked.jsonl");
+const introspectionMarkerPaths = Object.fromEntries(
+	Object.entries(markerPaths).flatMap(([name, path]) => [
+		[`${name}:version`, `${path}.version`],
+		[`${name}:help`, `${path}.help`],
+	]),
+);
 let session;
 
 try {
@@ -45,11 +52,18 @@ try {
 		const executablePath = join(binDir, name);
 		await writeFile(
 			executablePath,
-			`#!${process.execPath}\nimport { writeFile } from "node:fs/promises";\nconst args = process.argv.slice(2);\nif (args[0] === "--fixture-exit-1") process.exitCode = 1;\nelse {\n  await writeFile(${JSON.stringify(markerPaths[name])}, JSON.stringify({ args, cwd: process.cwd(), sentinel: process.env.PI_CLI_TOOLS_SMOKE_SENTINEL ?? null }));\n  process.stdout.write(${JSON.stringify(`${name} smoke stdout`)});\n  process.stderr.write(${JSON.stringify(`${name} smoke stderr`)});\n}\n`,
+			`#!${process.execPath}\nimport { appendFile, writeFile } from "node:fs/promises";\nconst args = process.argv.slice(2);\nconst record = JSON.stringify({ args, cwd: process.cwd(), sentinel: process.env.PI_CLI_TOOLS_SMOKE_SENTINEL ?? null });\nif (args[0] === "--version") { await appendFile(${JSON.stringify(`${markerPaths[name]}.version`)}, record + "\\n"); process.stdout.write(${JSON.stringify(`${name} fixture version`)}); }\nelse if (args[0] === "--help") { await appendFile(${JSON.stringify(`${markerPaths[name]}.help`)}, record + "\\n"); if (${JSON.stringify(name)} === "rg") process.exitCode = 2; else process.stdout.write(${JSON.stringify(`${name} fixture help`)}); }\nelse if (args[0] === "--fixture-exit-1") process.exitCode = 1;\nelse {\n  await writeFile(${JSON.stringify(markerPaths[name])}, record);\n  process.stdout.write(${JSON.stringify(`${name} smoke stdout`)});\n  process.stderr.write(${JSON.stringify(`${name} smoke stderr`)});\n}\n`,
 			"utf8",
 		);
 		await chmod(executablePath, 0o755);
 	}
+	const manPath = join(binDir, "man");
+	await writeFile(
+		manPath,
+		`#!${process.execPath}\nimport { appendFile } from "node:fs/promises";\nconst record = JSON.stringify({ args: process.argv.slice(2), pager: process.env.MANPAGER ?? null, term: process.env.TERM ?? null });\nawait appendFile(${JSON.stringify(manMarkerPath)}, record + "\\n");\nprocess.stdout.write("controlled rg manual");\n`,
+		"utf8",
+	);
+	await chmod(manPath, 0o755);
 
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.PATH = "bin";
@@ -89,13 +103,13 @@ try {
 	if (lifecycleErrors.length > 0) throw new Error(`Pi lifecycle errors: ${JSON.stringify(lifecycleErrors)}`);
 	const activeCliTools = session
 		.getActiveToolNames()
-		.filter((name) => name === "cli_gh" || name === "cli_rg")
+		.filter((name) => name === "cli_docs" || name === "cli_gh" || name === "cli_rg")
 		.sort();
-	if (JSON.stringify(activeCliTools) !== JSON.stringify(["cli_gh", "cli_rg"])) {
+	if (JSON.stringify(activeCliTools) !== JSON.stringify(["cli_docs", "cli_gh", "cli_rg"])) {
 		throw new Error(`Bundled native tools were not active after session_start: ${JSON.stringify(activeCliTools)}`);
 	}
 
-	for (const markerPath of Object.values(markerPaths)) {
+	for (const markerPath of [...Object.values(markerPaths), ...Object.values(introspectionMarkerPaths), manMarkerPath]) {
 		try {
 			await readFile(markerPath);
 			throw new Error("Startup discovery invoked a bundled executable");
@@ -143,6 +157,68 @@ try {
 		}
 	}
 
+	const docs = session.getToolDefinition("cli_docs");
+	if (!docs) throw new Error("cli_docs shared definition was not registered");
+	const docsResult = await docs.execute("smoke-docs", { tool: "cli_gh" }, undefined, undefined, { cwd });
+	if (docsResult.details?.kind !== "docs" || docsResult.details.status !== "ok") {
+		throw new Error(`cli_docs did not return successful typed details: ${JSON.stringify(docsResult.details)}`);
+	}
+	if (docsResult.details.source !== "help" || docsResult.details.version.status !== "ok") {
+		throw new Error(`cli_docs returned unexpected local sources: ${JSON.stringify(docsResult.details)}`);
+	}
+	const docsText = docsResult.content.find(({ type }) => type === "text")?.text ?? "";
+	if (!docsText.includes("gh fixture version") || !docsText.includes("gh fixture help")) {
+		throw new Error(`cli_docs did not return controlled local version/help text: ${docsText}`);
+	}
+	for (const [kind, expectedArgs] of [
+		["version", ["--version"]],
+		["help", ["--help"]],
+	]) {
+		const records = await readJsonLines(introspectionMarkerPaths[`gh:${kind}`]);
+		if (records.length !== 1 || JSON.stringify(records[0]?.args) !== JSON.stringify(expectedArgs)) {
+			throw new Error(`cli_docs changed ${kind} argv or invoked it more than once: ${JSON.stringify(records)}`);
+		}
+	}
+	await docs.execute("smoke-docs-cached", { tool: "cli_gh" }, undefined, undefined, { cwd });
+	for (const kind of ["version", "help"]) {
+		const records = await readJsonLines(introspectionMarkerPaths[`gh:${kind}`]);
+		if (records.length !== 1) throw new Error(`cli_docs cache missed for ${kind}`);
+	}
+
+	const rgDocs = await docs.execute("smoke-rg-docs", { tool: "cli_rg" }, undefined, undefined, { cwd });
+	if (rgDocs.details?.kind !== "docs" || rgDocs.details.status !== "ok" || rgDocs.details.source !== "man") {
+		throw new Error(`cli_docs did not use controlled rg man fallback: ${JSON.stringify(rgDocs.details)}`);
+	}
+	const rgDocsText = rgDocs.content.find(({ type }) => type === "text")?.text ?? "";
+	if (!rgDocsText.includes("rg fixture version") || !rgDocsText.includes("controlled rg manual")) {
+		throw new Error(`cli_docs returned unexpected rg fallback content: ${rgDocsText}`);
+	}
+	const rgVersionRecords = await readJsonLines(introspectionMarkerPaths["rg:version"]);
+	const rgHelpRecords = await readJsonLines(introspectionMarkerPaths["rg:help"]);
+	const manRecords = await readJsonLines(manMarkerPath);
+	if (
+		rgVersionRecords.length !== 1 ||
+		JSON.stringify(rgVersionRecords[0]?.args) !== JSON.stringify(["--version"]) ||
+		rgHelpRecords.length !== 1 ||
+		JSON.stringify(rgHelpRecords[0]?.args) !== JSON.stringify(["--help"]) ||
+		manRecords.length !== 1 ||
+		JSON.stringify(manRecords[0]?.args) !== JSON.stringify(["rg"]) ||
+		manRecords[0]?.pager !== "cat" ||
+		manRecords[0]?.term !== "dumb"
+	) {
+		throw new Error(
+			`cli_docs rg fallback changed argv, environment, or invocation count: ${JSON.stringify({ rgVersionRecords, rgHelpRecords, manRecords })}`,
+		);
+	}
+	await docs.execute("smoke-rg-docs-cached", { tool: "cli_rg" }, undefined, undefined, { cwd });
+	if (
+		(await readJsonLines(introspectionMarkerPaths["rg:version"])).length !== 1 ||
+		(await readJsonLines(introspectionMarkerPaths["rg:help"])).length !== 2 ||
+		(await readJsonLines(manMarkerPath)).length !== 1
+	) {
+		throw new Error("cli_docs cache isolation failed for the rg man fallback");
+	}
+
 	const rg = session.getToolDefinition("cli_rg");
 	if (!rg) throw new Error("cli_rg native definition was not registered");
 	const noMatch = await rg.execute("smoke-no-match", { args: ["--fixture-exit-1"] }, undefined, undefined, { cwd });
@@ -156,9 +232,16 @@ try {
 	}
 
 	process.stdout.write(
-		"Packed production install, both bundled definitions, real Pi lifecycle, and controlled native executions passed.\n",
+		"Packed production install, both bundled definitions, cli_docs laziness/cache, real Pi lifecycle, and controlled native executions passed.\n",
 	);
 } finally {
 	session?.dispose();
 	await rm(root, { force: true, recursive: true });
+}
+
+async function readJsonLines(path) {
+	return (await readFile(path, "utf8"))
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
 }

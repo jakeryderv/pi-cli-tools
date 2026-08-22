@@ -19,7 +19,11 @@ introspection:
     args: [--version]
   help:
     args: [--help]
-  man: false
+  man:
+    binary:
+      candidates: [man]
+    args: [rg]
+    timeout_ms: 10000
 
 docs:
   official:

@@ -8,6 +8,8 @@ import {
 	CLI_MAX_ARGUMENT_BYTES,
 	CLI_MAX_ARGUMENT_COUNT,
 	CLI_MAX_PATH_BYTES,
+	CLI_MAX_RETURNED_OUTPUT_BYTES,
+	CLI_MAX_RETURNED_OUTPUT_LINES,
 	CLI_MAX_TIMEOUT_MS,
 	CLI_MAX_TOTAL_ARGUMENT_BYTES,
 	CLI_MIN_TIMEOUT_MS,
@@ -46,12 +48,61 @@ export async function runCli(
 	options: CliExecutionOptions = {},
 ): Promise<CliExecutionResult> {
 	validateRequest(request);
+	return executeBounded(request, options, {
+		maxBytes: CLI_MAX_RETURNED_OUTPUT_BYTES,
+		maxLines: CLI_MAX_RETURNED_OUTPUT_LINES,
+		retainRawOutput: true,
+	});
+}
 
+/** Host-only tighter capture controls used by local introspection. Raw overflow is discarded, never spooled. */
+export interface CliCaptureExecutionOptions extends CliExecutionOptions {
+	readonly maxOutputBytes: number;
+	readonly maxOutputLines: number;
+}
+
+/** Execute through the same strict process boundary as runCli without retaining raw overflow. */
+export async function runCliCapture(
+	request: CliExecutionRequest,
+	options: CliCaptureExecutionOptions,
+): Promise<CliExecutionResult> {
+	validateRequest(request);
+	if (
+		!Number.isInteger(options.maxOutputBytes) ||
+		options.maxOutputBytes < 1 ||
+		options.maxOutputBytes > CLI_MAX_RETURNED_OUTPUT_BYTES ||
+		!Number.isInteger(options.maxOutputLines) ||
+		options.maxOutputLines < 1 ||
+		options.maxOutputLines > CLI_MAX_RETURNED_OUTPUT_LINES
+	) {
+		throw new CliExecutionRequestError(
+			"invalid_output_strategy",
+			"capture limits must be positive integers within the runner output ceiling",
+		);
+	}
+	return executeBounded(request, options, {
+		maxBytes: options.maxOutputBytes,
+		maxLines: options.maxOutputLines,
+		retainRawOutput: false,
+	});
+}
+
+async function executeBounded(
+	request: CliExecutionRequest,
+	options: CliExecutionOptions,
+	projectionOptions: {
+		readonly maxBytes: number;
+		readonly maxLines: number;
+		readonly retainRawOutput: boolean;
+	},
+): Promise<CliExecutionResult> {
 	const executablePath = request.executablePath;
 	const args = [...request.args];
 	const cwd = request.cwd;
-	const collector = new CombinedOutputCollector(request.outputStrategy);
-	const spool = new RawOutputSpool(options.temporaryDirectory ?? tmpdir());
+	const collector = new CombinedOutputCollector(request.outputStrategy, projectionOptions);
+	const spool = projectionOptions.retainRawOutput
+		? new RawOutputSpool(options.temporaryDirectory ?? tmpdir())
+		: undefined;
 	const environment = createEnvironment(request.environment, options.inheritedEnvironment);
 	const startedAt = process.hrtime.bigint();
 	const processOutcome = await executeCliProcess({
@@ -63,22 +114,32 @@ export async function runCli(
 		...(options.signal ? { signal: options.signal } : {}),
 		startedAt,
 		onPipes: (stdout, stderr) => {
-			spool.attachInputs(stdout, stderr);
+			spool?.attachInputs(stdout, stderr);
 		},
 		onOutput: (stream, chunk) => {
 			const truncated = collector.add(stream, chunk);
-			spool.capture(stream, chunk, truncated);
+			spool?.capture(stream, chunk, truncated);
 		},
 	});
 	const projection = collector.finish();
-	const spoolResult = await spool.finish(
-		projection.truncation.truncated || processOutcome.capture.cutOff,
-		processOutcome.capture.complete,
-		{
-			stdout: projection.truncation.stdout.rawBytesReceived,
-			stderr: projection.truncation.stderr.rawBytesReceived,
-		},
-	);
+	const spoolResult = spool
+		? await spool.finish(
+				projection.truncation.truncated || processOutcome.capture.cutOff,
+				processOutcome.capture.complete,
+				{
+					stdout: projection.truncation.stdout.rawBytesReceived,
+					stderr: projection.truncation.stderr.rawBytesReceived,
+				},
+			)
+		: {
+				status: "not_needed" as const,
+				path: null,
+				bytesWritten: 0 as const,
+				maxBytes: 0,
+				error: null,
+				retainedPaths: [],
+				cleanupError: null,
+			};
 	const common = {
 		executablePath,
 		args,

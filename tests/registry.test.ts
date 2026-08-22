@@ -39,7 +39,11 @@ describe("loadRegistry", () => {
 			id: "ripgrep",
 			tool_name: "cli_rg",
 			binary: { candidates: ["rg"] },
-			introspection: { version: { args: ["--version"] }, help: { args: ["--help"] }, man: false },
+			introspection: {
+				version: { args: ["--version"] },
+				help: { args: ["--help"] },
+				man: { binary: { candidates: ["man"] }, args: ["rg"], timeout_ms: 10_000 },
+			},
 			execution: {
 				timeout_ms: 120_000,
 				cwd: "session",
@@ -149,6 +153,83 @@ describe("loadRegistry", () => {
 				path: join(bundledDirectory, "invalid.json"),
 			}),
 		]);
+	});
+
+	it("accepts only an explicit strict man command and keeps introspection exit policy separate", async () => {
+		const definition = createDefinition();
+		definition.execution.accepted_exit_codes = [0, 1];
+		definition.introspection.help = { args: ["--help"], accepted_exit_codes: [2], timeout_ms: 5_000 };
+		definition.introspection.man = {
+			binary: { candidates: ["man"] },
+			args: ["gh"],
+			accepted_exit_codes: [0],
+			timeout_ms: 1_000,
+		};
+		await writeYaml(bundledDirectory, "valid.yaml", definition);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(requireDefinition(result).introspection).toMatchObject({
+			help: { args: ["--help"], accepted_exit_codes: [2], timeout_ms: 5_000 },
+			man: {
+				binary: { candidates: ["man"] },
+				args: ["gh"],
+				accepted_exit_codes: [0],
+				timeout_ms: 1_000,
+			},
+		});
+		expect(getAcceptedExitCodes(requireDefinition(result))).toEqual([0, 1]);
+	});
+
+	it.each([
+		["legacy guessed man", true],
+		["empty man args", { binary: { candidates: ["man"] }, args: [] }],
+		["unknown man field", { binary: { candidates: ["man"] }, args: ["gh"], page: "gh" }],
+		["path-selected helper", { binary: { candidates: ["/usr/bin/man"] }, args: ["gh"] }],
+	])("rejects %s", async (_name, man) => {
+		const definition = createDefinition() as unknown as Record<string, unknown>;
+		(definition.introspection as Record<string, unknown>).man = man;
+		await writeYaml(bundledDirectory, "invalid.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_definition" })]);
+	});
+
+	it("reserves cli_docs for the shared adapter tool", async () => {
+		await writeYaml(bundledDirectory, "invalid.yaml", createDefinition("docs-owner", "cli_docs"));
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues[0]).toMatchObject({ code: "invalid_definition" });
+		expect(result.issues[0]?.message).toContain("reserved");
+	});
+
+	it("rejects configured introspection templates above UTF-8 and combined runner bounds", async () => {
+		const perArgument = createDefinition();
+		perArgument.introspection.help = { args: ["€".repeat(3_000)] };
+		await writeYaml(bundledDirectory, "per-argument.yaml", perArgument);
+		const combined = createDefinition("combined", "cli_combined");
+		combined.introspection.help = { args: Array.from({ length: 5 }, () => "x".repeat(8_000)) };
+		await writeYaml(bundledDirectory, "combined.yaml", combined);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toHaveLength(2);
+		expect(result.issues.every(({ code }) => code === "invalid_definition")).toBe(true);
+	});
+
+	it("reserves the maximum subcommand selector count and byte budgets", async () => {
+		const tooMany = createDefinition("too-many", "cli_too_many");
+		if (!tooMany.introspection.subcommand_help) throw new Error("expected subcommand help");
+		tooMany.introspection.subcommand_help.append_args = Array.from({ length: 121 }, () => "x");
+		await writeYaml(bundledDirectory, "too-many.yaml", tooMany);
+
+		const tooLarge = createDefinition("too-large", "cli_too_large");
+		if (!tooLarge.introspection.subcommand_help) throw new Error("expected subcommand help");
+		tooLarge.introspection.subcommand_help.append_args = Array.from({ length: 4 }, () => "x".repeat(8_064));
+		await writeYaml(bundledDirectory, "too-large.yaml", tooLarge);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toHaveLength(2);
+		expect(result.issues.every(({ code }) => code === "invalid_definition")).toBe(true);
 	});
 
 	it("rejects unknown fields with source provenance", async () => {
@@ -374,7 +455,7 @@ function createDefinition(id = "github", toolName = "cli_gh"): RegistryDefinitio
 		introspection: {
 			version: { args: ["--version"] },
 			help: { args: ["--help"] },
-			subcommand_help: { append_args: ["--help"] },
+			subcommand_help: { allowed_paths: [["pr"]], append_args: ["--help"] },
 			man: false,
 		},
 		docs: { official: ["https://example.com/docs"] },

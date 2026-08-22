@@ -8,6 +8,8 @@ import {
 	createPiCliToolsState,
 	formatCliToolsDiagnostics,
 	hasCliToolsWarnings,
+	isCliDocsToolResultDetails,
+	isCliDocsToolResultError,
 	isCliToolResultDetails,
 	isCliToolResultError,
 } from "./pi-adapter.js";
@@ -38,6 +40,10 @@ export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void>
 	});
 
 	pi.on("tool_result", (event) => {
+		if (event.toolName === "cli_docs" && isCliDocsToolResultDetails(event.details)) {
+			if (isCliDocsToolResultError(event.details)) return { isError: true };
+			return;
+		}
 		const registered = state.registered.find(
 			({ discovery }) => discovery.registry.definition.tool_name === event.toolName,
 		);
@@ -46,6 +52,12 @@ export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void>
 		if (event.details.registryId !== definition.id) return;
 		if (isCliToolResultError(event.details, getAcceptedExitCodes(definition))) return { isError: true };
 		return;
+	});
+
+	pi.on("session_shutdown", async () => {
+		const service = state.introspectionService;
+		state.introspectionService = null;
+		await service?.close();
 	});
 
 	pi.registerCommand("cli-tools", {

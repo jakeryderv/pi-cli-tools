@@ -30,6 +30,7 @@ const expectedFiles = new Set([
 	"extensions/cli-tools.ts",
 	"extensions/pi-adapter.ts",
 	"package.json",
+	"src/cache.ts",
 	"src/errors.ts",
 	"src/introspect.ts",
 	"src/limits.ts",
@@ -57,7 +58,7 @@ try {
 } catch (error) {
 	throw new Error("package.json contains invalid JSON", { cause: error });
 }
-for (const peer of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
 	if (packageManifest.peerDependencies?.[peer] !== "*") {
 		throw new Error(`Pi host package must be a wildcard peer dependency: ${peer}`);
 	}

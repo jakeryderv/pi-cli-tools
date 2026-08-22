@@ -81,9 +81,9 @@ pi-cli-tools/
 │   ├── process-lifecycle.ts # process-group supervision
 │   ├── output.ts          # deterministic bounded text projection
 │   ├── spool.ts           # private lazy raw-output retention
-│   ├── introspect.ts      # executable, version, help, and man discovery
-│   ├── docs.ts            # documentation retrieval and focused search
-│   └── cache.ts           # introspection and documentation cache
+│   ├── introspect.ts      # executable discovery and bounded local version/help/man retrieval
+│   ├── cache.ts           # session-local successful introspection cache and flight deduplication
+│   └── docs.ts            # planned v0.3 remote retrieval and focused search; not present in v0.2
 ├── tools/
 │   ├── github.yaml
 │   └── ripgrep.yaml
@@ -122,8 +122,6 @@ introspection:
     args: ["--version"]
   help:
     args: ["--help"]
-  subcommand_help:
-    append_args: ["--help"]
   man: false
 
 docs:
@@ -148,7 +146,8 @@ The registry should be validated before any tools are registered:
 - Tool names must satisfy Pi's tool-name requirements.
 - Tool-name collisions with built-in or extension tools must fail clearly by default.
 - Definitions must use known fields and valid values.
-- Argument lists must contain strings only.
+- Argument lists must contain strings only; subcommand-help suffixes reserve the maximum selector count and byte budgets.
+- Subcommand-help paths must be exact, unique, bounded registry allowlist entries.
 - Accepted exit codes, when present, must contain 1 through 256 unique finite integers in the portable 0-through-255 process-exit range; canonical negative zero is rejected because it is not JSON-stable.
 - Timeouts and output limits must remain within hard runtime bounds.
 - A missing executable is an availability condition, not an extension startup failure.
@@ -305,17 +304,23 @@ The v0.1d Pi adapter uses tail output for every CLI unless registry-configurable
 
 ## Local introspection
 
-Introspection commands must be explicitly configured in the registry. The runtime should not recursively guess every CLI's command structure.
+v0.2 implements local introspection through one session-scoped agent-independent service and one shared Pi `cli_docs` adapter. Introspection commands must be explicitly configured in the registry. Startup, discovery, registration, reload, and diagnostics never execute them, and the runtime does not recursively guess a CLI's command structure.
+
+The shared input selects only an exact successfully registered native tool and an optional bounded ASCII subcommand path. A selected path must also exactly match the definition's `subcommand_help.allowed_paths`; the bundled GitHub definition leaves this disabled because arbitrary GitHub aliases and extensions can execute behavior. The input does not expose operation templates, executables, arbitrary argv, environment/cwd/stdin controls, man-page names, URLs, query text, or cache controls. A top-level request retrieves configured version and help, with an explicitly configured man command as fallback. An explicit allowed subcommand retrieves only subcommand help and never falls back to top-level material.
+
+Local commands reuse the strict runner boundary with exact paths, separate argv elements, no shell or TTY, ignored stdin, registry environment/cwd policy, at most ten-second command timeouts, aggregate cancellation, process-group cleanup, deterministic head capture, and no raw-output spool. Version text is bounded to 4 KiB/20 lines; help/man text is bounded to 32 KiB/1,000 lines. Documentation accepted-exit policy is distinct from generic execution policy.
 
 ### Version and help
 
 Version and top-level help are retrieved on first use and cached. Subcommand help is requested only for an explicit subcommand path supplied to `cli_docs`.
 
-For the example definition:
+For a trusted definition that explicitly declares:
 
-```text
-subcommand: ["pr", "create"]
-append_args: ["--help"]
+```yaml
+subcommand_help:
+  allowed_paths:
+    - [pr, create]
+  append_args: [--help]
 ```
 
 The local command would be equivalent to invoking:
@@ -328,7 +333,7 @@ without using a shell.
 
 ### Man pages
 
-Man-page retrieval is optional and platform-dependent. It must disable interactive pagers and return plain, bounded text. Absence of `man` or of a page is a normal unavailable-source result.
+Man-page retrieval is optional and platform-dependent. v0.2 accepts only `man: false` or an explicit helper-candidate and fixed-argv object; legacy `man: true` is rejected. The helper is resolved lazily, invoked by exact real path, and receives a controlled noninteractive pager environment. A missing helper is an unavailable source. Unaccepted helper exits remain structured failures because v0.2 does not infer a portable “page missing” exit code. Man, its formatters, and preprocessors are not sandboxed.
 
 ### Cache identity
 
@@ -340,40 +345,37 @@ Local introspection cache entries should include enough identity to avoid stale 
 - Registry definition hash
 - Introspection request, including subcommand path
 
-A changed executable or changed definition must invalidate the relevant cache entry.
+A changed executable or changed definition invalidates relevant cache entries. v0.2 uses a bounded in-memory success-only LRU keyed by complete definition digest, exact target/helper file identity, source, argv/subcommand, cwd, and environment digest. One coherent target identity is checked before lookup, around execution, and before aggregate return. Cache values cross clone boundaries. Identical concurrent requests share a flight with waiter-aware cancellation, and aborted loaders retain concurrency capacity until cleanup settles. Failures, incomplete capture, and unconfirmed cleanup are not cached. Session shutdown aborts and awaits flights before reload starts a new cache.
 
 ## Shared `cli_docs` tool
 
-Expose one documentation tool for every registered CLI:
+Expose one shared documentation tool for every registered CLI:
 
 ```text
 cli_docs({
-  tool: "cli_gh",
-  subcommand: ["pr", "create"],
-  query: "create a draft pull request"
+  tool: "cli_gh"
 })
 ```
 
 `subcommand` is optional but should be preferred when the caller knows which command family is relevant. This avoids relying on natural-language search to infer where `--help` belongs.
 
-Its retrieval order should be:
+The implemented v0.2 retrieval order is:
 
 1. Installed version and explicitly requested local help.
-2. Configured local man page.
-3. Cached official documentation associated with that version where possible.
-4. Live official documentation when local and cached sources are insufficient.
+2. For top-level requests only, a configured local man page when help is unavailable or fails.
 
-The tool should return:
+Cached/live official documentation and focused query search remain v0.3 work. v0.2 validates `docs.official` metadata but does not use or fetch it and does not claim version alignment.
 
-- A small relevant excerpt
-- Source type: `help`, `man`, `cache`, or `official`
-- Installed CLI version when known
-- Introspection command used for local material
-- Source URL for remote material
-- Cache status
-- Truncation status
+The v0.2 tool returns:
 
-It must never inject an entire manual into context.
+- A bounded local excerpt
+- Source type: `help`, `subcommand_help`, or `man`
+- Raw attributed installed-version text when available
+- Exact local argv-array provenance
+- Cache and truncation status
+- Ordered bounded attempt metadata
+
+It never injects an entire manual into context. Remote source URLs and version-alignment metadata are future v0.3 fields, not v0.2 claims.
 
 ### Official documentation boundaries
 
@@ -546,14 +548,15 @@ The initial idea is validated when:
 - Add human-facing status and refresh commands.
 - Cover the runner with controlled fake-executable tests.
 
-### v0.2 — Local introspection
+### v0.2 — Local introspection (implemented; independent findings resolved)
 
 - Detect installed versions lazily.
 - Capture top-level help on demand.
 - Retrieve explicit subcommand help.
-- Add optional man-page support.
+- Add optional explicitly configured man-page support.
 - Introduce the shared `cli_docs` tool.
-- Cache local introspection by executable and definition identity.
+- Cache only complete successful local introspection by definition, executable/helper, environment, cwd, operation, and subcommand identity.
+- Deduplicate concurrent identical requests and abort/clear session-local state on shutdown.
 
 ### v0.3 — Scale and official documentation
 
