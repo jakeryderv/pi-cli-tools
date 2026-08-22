@@ -148,6 +148,7 @@ describePosix("runCli raw output spooling", () => {
 		if (!spoolDirectoryName) throw new Error("expected a spool directory");
 		const spoolDirectory = join(root, spoolDirectoryName);
 		await waitForFile(join(spoolDirectory, "stdout.raw"));
+		await waitForFile(join(spoolDirectory, "stderr.raw"));
 		await chmod(spoolDirectory, 0o500);
 		controller.abort();
 

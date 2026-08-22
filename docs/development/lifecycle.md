@@ -71,7 +71,7 @@ Report each applicable check as one of:
 | Fail   | The command ran and found a blocking problem                                    |
 | Skip   | The check was not applicable or could not run; include the reason and follow-up |
 
-Do not claim a build, test, or check passes without fresh command output. Feature changes should also run focused tests that can falsify their acceptance criteria.
+Do not claim a build, test, or check passes without fresh command output. Feature changes should also run focused tests that can falsify their acceptance criteria. For Pi lifecycle or native-tool changes, `npm run smoke:pi` must exercise a real `DefaultResourceLoader`/session binding path and a controlled local tool invocation without network or model access; a print-mode notification alone is not sufficient evidence.
 
 ### Review
 

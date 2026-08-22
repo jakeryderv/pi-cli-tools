@@ -112,7 +112,89 @@ describe("loadRegistry", () => {
 		expect(result.issues).toEqual([expect.objectContaining({ code: "duplicate_id", layer: "user" })]);
 	});
 
-	it("removes all definitions that share a final Pi tool name", async () => {
+	it("quarantines a lower definition when a higher layer has duplicate IDs", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		await mkdir(userDirectory);
+		await writeYaml(userDirectory, "first.yaml", createDefinition("github", "first_gh"));
+		await writeYaml(userDirectory, "second.yaml", createDefinition("github", "second_gh"));
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.quarantined).toEqual([
+			{
+				id: "github",
+				layer: "user",
+				paths: [join(userDirectory, "first.yaml"), join(userDirectory, "second.yaml")],
+				reason: "duplicate_id",
+			},
+		]);
+	});
+
+	it("quarantines an attributable malformed higher-layer tombstone", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		await mkdir(userDirectory);
+		await writeFile(join(userDirectory, "malformed.yaml"), "id: github\ndisabled: true\ndisabled: false\n", "utf8");
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions[0]?.definition.tool_name).toBe("cli_gh");
+		expect(result.quarantined).toEqual([
+			{
+				id: "github",
+				layer: "user",
+				paths: [join(userDirectory, "malformed.yaml")],
+				reason: "invalid_override",
+			},
+		]);
+		expect(result.issues).toEqual([expect.objectContaining({ code: "yaml_parse_error" })]);
+	});
+
+	it("does not attribute a malformed document with duplicate top-level IDs", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		await mkdir(userDirectory);
+		await writeFile(join(userDirectory, "ambiguous.yaml"), "id: github\nid: another\ndisabled: true\n", "utf8");
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.quarantined).toEqual([]);
+		expect(result.definitions[0]?.definition.id).toBe("github");
+	});
+
+	it("quarantines an attributable invalid higher-layer override", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		await mkdir(userDirectory);
+		await writeYaml(userDirectory, "invalid.yaml", { id: "github", disabled: true, unexpected: true });
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions[0]?.definition.tool_name).toBe("cli_gh");
+		expect(result.quarantined).toEqual([
+			{
+				id: "github",
+				layer: "user",
+				paths: [join(userDirectory, "invalid.yaml")],
+				reason: "invalid_override",
+			},
+		]);
+	});
+
+	it("excludes quarantined IDs before final tool-name conflict calculation", async () => {
+		await writeYaml(bundledDirectory, "a.yaml", createDefinition("a", "cli_shared"));
+		await writeYaml(bundledDirectory, "b.yaml", createDefinition("b", "cli_shared"));
+		await mkdir(userDirectory);
+		await writeYaml(userDirectory, "invalid-a.yaml", {
+			...createDefinition("a", "cli_invalid"),
+			unexpected: true,
+		});
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions.map(({ definition }) => definition.id)).toEqual(["a", "b"]);
+		expect(result.quarantined.map(({ id }) => id)).toEqual(["a"]);
+		expect(result.issues.map(({ code }) => code)).toEqual(["invalid_definition"]);
+	});
+
+	it("removes all executable definitions that share a final Pi tool name", async () => {
 		await writeYaml(bundledDirectory, "github.yaml", createDefinition("github", "cli_remote"));
 		await writeYaml(bundledDirectory, "gitlab.yaml", createDefinition("gitlab", "cli_remote"));
 

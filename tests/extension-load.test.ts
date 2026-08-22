@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import cliToolsExtension from "../extensions/cli-tools.js";
 
-describe("cli-tools extension", () => {
+describe("cli-tools extension factory", () => {
 	let agentDirectory: string | undefined;
 
 	afterEach(async () => {
@@ -20,26 +20,32 @@ describe("cli-tools extension", () => {
 		expect(cliToolsExtension).toBeTypeOf("function");
 	});
 
-	it("loads registry state and registers only the diagnostics command", async () => {
+	it("registers lifecycle hooks and diagnostics without calling Pi action methods during factory loading", async () => {
 		agentDirectory = await mkdtemp(join(tmpdir(), "pi-cli-tools-agent-"));
 		vi.stubEnv("PI_CODING_AGENT_DIR", agentDirectory);
-		const registerCommand = vi.fn();
+		const on = vi.fn<(event: string, handler: unknown) => void>();
+		const registerCommand = vi.fn<(name: string, command: unknown) => void>();
 		const registerTool = vi.fn();
 		const getAllTools = vi.fn(() => []);
+		const getActiveTools = vi.fn(() => []);
 		const pi = {
+			getActiveTools,
 			getAllTools,
+			on,
 			registerCommand,
 			registerTool,
 		} as unknown as ExtensionAPI;
 
 		await expect(cliToolsExtension(pi)).resolves.toBeUndefined();
 		expect(getAllTools).not.toHaveBeenCalled();
+		expect(getActiveTools).not.toHaveBeenCalled();
 		expect(registerTool).not.toHaveBeenCalled();
+		expect(on.mock.calls.map(([event]) => event)).toEqual(["session_start", "tool_result"]);
 		expect(registerCommand).toHaveBeenCalledOnce();
 		expect(registerCommand).toHaveBeenCalledWith(
 			"cli-tools",
 			expect.objectContaining({
-				description: "Show configured CLI registry and executable discovery status",
+				description: "Show native CLI registration, activation, and executable discovery status",
 			}),
 		);
 	});

@@ -71,7 +71,8 @@ Routing descriptions should remain curated and stable. Installed help may be use
 pi-cli-tools/
 ├── package.json
 ├── extensions/
-│   └── cli-tools.ts       # Pi integration, registration, and commands
+│   ├── cli-tools.ts       # Pi factory lifecycle and diagnostics command
+│   └── pi-adapter.ts      # Pi schemas, registration, result formatting, and rendering
 ├── src/
 │   ├── types.ts           # agent-independent contracts
 │   ├── limits.ts          # shared registry and runtime hard limits
@@ -167,22 +168,22 @@ The canonical user configuration location can be `~/.pi/agent/cli-tools/`. Proje
 
 Definitions are merged by stable `id`. A later definition with the same ID replaces the complete earlier definition rather than performing an ambiguous deep merge. A user layer disables a bundled definition with a strict tombstone containing only its ID and `disabled: true`.
 
-Each `.yaml`, `.yml`, or `.json` file contains one definition or tombstone. Duplicate IDs within the same layer are errors. Two enabled entries that resolve to the same `tool_name` are also errors.
+Each `.yaml`, `.yml`, or `.json` file contains one definition or tombstone. Duplicate IDs within the same layer are errors. Two enabled entries that resolve to the same `tool_name` are also errors. When the highest-precedence layer touching an ID contains duplicates or an invalid file with a safely identifiable valid ID, that ID is quarantined from executable registration rather than falling back to a lower definition. Malformed files whose IDs cannot be identified do not suppress unrelated definitions.
 
 ## Extension lifecycle and tool activation
 
 ### Startup
 
-The extension should do only bounded local work during startup:
+The extension does only bounded local work during startup, split around Pi's runtime binding boundary:
 
-1. Load and validate registry layers.
-2. Resolve executable candidates on `PATH`.
-3. Record the exact executable selected for each available entry.
-4. Register eligible Pi tools.
-5. Register a human-facing status command.
-6. Register the shared documentation tool once local introspection is introduced in v0.2.
+1. During extension factory loading, load and validate bundled and user registry layers and register lifecycle handlers plus `/cli-tools`.
+2. Do not call uninitialized Pi action methods such as `getAllTools()` or `getActiveTools()` from the factory. Pi permits `registerTool()` during factory loading, but this adapter intentionally defers it because collision preflight depends on post-bind `getAllTools()` and discovery depends on the session `ctx.cwd`.
+3. In one awaited, idempotent `session_start` handler, resolve executable candidates on `PATH` relative to `ctx.cwd`.
+4. Snapshot `getAllTools()` before adapter registration, record collisions with their `sourceInfo`, and register each available, supported, non-quarantined, non-colliding definition once.
+5. Record registration and activation outcomes for human-facing diagnostics.
+6. Register the shared documentation tool only once local introspection is introduced in v0.2.
 
-Startup should not run version, help, man, or network documentation commands.
+Startup does not run executables or version, help, man, or network documentation commands. `/reload` creates a fresh extension instance and is the v0.1c refresh mechanism; no in-place watcher or refresh subsystem is used because Pi has no native-tool unregistration API.
 
 ### Missing and changed executables
 
@@ -213,7 +214,7 @@ The generic v0.1 input is deliberately small:
 }
 ```
 
-The initial tool input should not expose arbitrary environment overrides, shell text, standard input, or a caller-selected executable. Commands run in Pi's current working directory unless the registry specifies a fixed alternative.
+The initial tool input exposes exactly one required `args` array and does not expose environment overrides, shell text, standard input, cwd, timeout, executable selection, output strategy, or spool controls. Commands run in Pi's current working directory; the current registry schema supports only `cwd: session`.
 
 Richer CLI-specific tools may be added selectively after the generic interface is proven useful. Those tools may share the same runner and registry entry.
 
@@ -273,7 +274,9 @@ CliExecutionResult
   process_group_cleanup
 ```
 
-The Pi adapter should turn this into concise model-facing text plus structured `details` for rendering and diagnostics.
+The Pi adapter turns this into sanitized, concise model-facing text plus serializable structured `details` for rendering and diagnostics. Details retain the complete runner result, including separate stdout/stderr, capture and truncation metadata, spool path/failure and conditional cleanup ownership, and process-group cleanup state. Cleanup is not applicable when no paths were retained; otherwise `pi-cli-tools` owns the retained artifacts until an embedding host calls `removeCliOutputSpool()` or the user explicitly removes a disclosed path. Because Pi persists tool details and model-facing output in session history, both forms must be treated as potentially sensitive.
+
+The adapter's `tool_result` handler marks request errors, spawn errors, timeouts, cancellations, signal exits, and nonzero exits as Pi errors without discarding their structured results. Exit zero without a terminating signal is not an error; truncation, partial capture, and spool warnings do not by themselves convert an otherwise successful exit into an error.
 
 Non-zero exit codes should always be preserved and clearly displayed, but the generic runtime should not assume that every non-zero code has the same meaning. Some CLIs use non-zero codes for domain outcomes such as “no matches.” CLI-specific definitions may later declare accepted exit codes.
 
@@ -431,7 +434,7 @@ The extension should expose a status command, such as `/cli-tools`, that reports
 - Activation state
 - How to refresh discovery after installing a CLI
 
-Diagnostics should not require the model or consume conversation context.
+Diagnostics should not require the model or consume conversation context. v0.1c stores activation-time collision outcomes rather than recomputing collisions from names, which avoids classifying successfully registered adapter tools as collisions with themselves. Diagnostics instruct users to run `/reload` after executable or registry changes.
 
 ## Testing strategy
 
@@ -505,6 +508,16 @@ The initial idea is validated when:
 - Capture separate streams under one deterministic model-facing budget.
 - Stream raw output to private capped spools and retain complete output only when truncation requires it.
 - Keep the Pi extension diagnostics-only while the core contract receives independent review.
+
+### v0.1c — Native Pi tool adapter
+
+- Defer executable discovery and Pi action methods to `session_start`.
+- Register one generic `{ args: string[] }` native tool for each eligible available CLI.
+- Preflight Pi tool-name collisions without intentional overrides.
+- Map exact discovery paths, registry execution policy, current session cwd, and Pi cancellation into the v0.1b runner.
+- Return bounded sanitized text, structured execution details, explicit Pi error classification, and compact TUI rendering.
+- Report registered, active, missing, disabled, quarantined, colliding, unsupported, and failed registrations through `/cli-tools`.
+- Use `/reload` for deterministic rediscovery and registration refresh.
 
 ### v0.1 — Reliable registry and execution
 
