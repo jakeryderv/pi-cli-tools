@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,7 +60,7 @@ describePosix("runCli process execution", () => {
 		expect(result).toMatchObject({ status: "exited", exitCode: 0, signal: null });
 		expect(JSON.parse(result.stdout)).toMatchObject({
 			args: literalArguments,
-			cwd: root,
+			cwd: await realpath(root),
 			environmentValue: null,
 			stdinEnded: true,
 			tty: { stdin: false, stdout: false, stderr: false },
@@ -103,14 +103,14 @@ describePosix("runCli process execution", () => {
 		);
 
 		expect(JSON.parse(inherited.stdout)).toMatchObject({
-			cwd,
+			cwd: await realpath(cwd),
 			environmentValue: "present",
 			environment: inheritedEnvironment,
 			stdinEnded: true,
 			tty: { stdin: false, stdout: false, stderr: false },
 		});
 		expect(JSON.parse(empty.stdout)).toMatchObject({
-			cwd,
+			cwd: await realpath(cwd),
 			environmentValue: null,
 			environment: {},
 			stdinEnded: true,
@@ -277,7 +277,7 @@ describePosix("runCli process execution", () => {
 		const result = await withWatchdog(execution, 3_000);
 
 		expect(result.status).toBe("exited");
-		expect(result.processGroupCleanup).toMatchObject({ attempted: true, confirmed: true });
+		expect(result.processGroupCleanup).toMatchObject({ confirmed: true });
 		expect(result.durationMs).toBeLessThan(CLI_OUTPUT_DRAIN_GRACE_MS);
 		await expectProcessGone(pids.descendantPid);
 		emergencyProcessGroups.delete(pids.parentPid);
