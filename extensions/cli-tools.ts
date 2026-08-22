@@ -10,6 +10,8 @@ import {
 	hasCliToolsWarnings,
 	isCliDocsToolResultDetails,
 	isCliDocsToolResultError,
+	isCliToolsToolResultDetails,
+	isCliToolsToolResultError,
 	isCliToolResultDetails,
 	isCliToolResultError,
 } from "./pi-adapter.js";
@@ -40,6 +42,10 @@ export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void>
 	});
 
 	pi.on("tool_result", (event) => {
+		if (event.toolName === "cli_tools" && isCliToolsToolResultDetails(event.details)) {
+			if (isCliToolsToolResultError(event.details)) return { isError: true };
+			return;
+		}
 		if (event.toolName === "cli_docs" && isCliDocsToolResultDetails(event.details)) {
 			if (isCliDocsToolResultError(event.details)) return { isError: true };
 			return;
@@ -55,9 +61,11 @@ export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void>
 	});
 
 	pi.on("session_shutdown", async () => {
-		const service = state.introspectionService;
+		const localService = state.introspectionService;
+		const officialService = state.officialDocumentationService;
 		state.introspectionService = null;
-		await service?.close();
+		state.officialDocumentationService = null;
+		await Promise.all([localService?.close(), officialService?.close()]);
 	});
 
 	pi.registerCommand("cli-tools", {

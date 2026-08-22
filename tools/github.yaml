@@ -1,11 +1,13 @@
 id: github
 tool_name: cli_gh
+activation: eager
 
 binary:
   candidates: [gh]
 
 routing:
   description: Work with GitHub repositories, issues, pull requests, releases, and workflows.
+  keywords: [github, pull-request, issue-tracker, release, workflow, api]
   prefer_for:
     - querying or modifying GitHub resources
     - GitHub API requests authenticated through the installed CLI
@@ -25,7 +27,15 @@ introspection:
 
 docs:
   official:
-    - https://cli.github.com/manual/
+    - id: gh-manual
+      title: GitHub CLI manual
+      url: https://cli.github.com/manual/
+      allowed_hosts: [cli.github.com]
+      allowed_path_prefix: /manual/
+      media: html
+      topics: [pull requests, issues, authentication, API, workflows]
+      alignment:
+        mode: latest
 
 execution:
   timeout_ms: 120000

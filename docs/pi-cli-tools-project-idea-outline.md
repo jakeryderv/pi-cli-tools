@@ -83,7 +83,9 @@ pi-cli-tools/
 │   ├── spool.ts           # private lazy raw-output retention
 │   ├── introspect.ts      # executable discovery and bounded local version/help/man retrieval
 │   ├── cache.ts           # session-local successful introspection cache and flight deduplication
-│   └── docs.ts            # planned v0.3 remote retrieval and focused search; not present in v0.2
+│   ├── catalog.ts         # deterministic validated-registry search
+│   ├── docs.ts            # official-document cache, text extraction, search, and alignment
+│   └── secure-fetch.ts    # hardened DNS, address, TLS, redirect, and HTTPS boundary
 ├── tools/
 │   ├── github.yaml
 │   └── ripgrep.yaml
@@ -126,7 +128,14 @@ introspection:
 
 docs:
   official:
-    - https://cli.github.com/manual/
+    - id: gh-manual
+      title: GitHub CLI manual
+      url: https://cli.github.com/manual/
+      allowed_hosts: [cli.github.com]
+      allowed_path_prefix: /manual/
+      media: html
+      alignment:
+        mode: latest
 
 execution:
   timeout_ms: 120000
@@ -182,7 +191,8 @@ The extension does only bounded local work during startup, split around Pi's run
 3. In one awaited, idempotent `session_start` handler, resolve executable candidates on `PATH` relative to `ctx.cwd`.
 4. Snapshot `getAllTools()` before adapter registration, record collisions with their `sourceInfo`, and register each available, supported, non-quarantined, non-colliding definition once.
 5. Record registration and activation outcomes for human-facing diagnostics.
-6. Register the shared documentation tool only once local introspection is introduced in v0.2.
+6. Register the shared `cli_tools` catalog and, when native registrations are effective, the shared documentation tool.
+7. Apply eager/lazy policy only after registration and ownership verification, preserving unrelated active tools.
 
 Startup does not run executables or version, help, man, or network documentation commands. `/reload` creates a fresh extension instance and is the v0.1c refresh mechanism; no in-place watcher or refresh subsystem is used because Pi has no native-tool unregistration API.
 
@@ -194,16 +204,17 @@ Execution should pass the selected top-level path directly rather than asking th
 
 ### Activation and scale
 
-For the small v0.1 registry, available CLI tools may be active immediately.
+v0.3 implements register-all/activate-some scaling:
 
-As the registry grows, the Pi adapter should support:
+- Every eligible native tool is registered before activation policy is applied.
+- `activation: eager | lazy` is definition policy; omission remains eager for compatibility.
+- The bundled GitHub and ripgrep definitions are explicitly eager.
+- The always-active `cli_tools` tool deterministically searches trusted registry routing metadata and enables exact registry IDs.
+- Enable is all-or-nothing before mutation, additive to Pi's latest active set, idempotent, ownership-checked, and postcondition-verified.
+- A `cli_tools` collision triggers an all-owned-native-active loader fallback.
+- Dynamic enables reset on reload/session replacement because Pi has no native-tool unregistration API.
 
-- Registering tools while leaving selected tools inactive.
-- An always-active `cli_tools` search/list/enable tool.
-- Per-definition `eager` or `lazy` activation.
-- Additive activation through Pi's dynamic tool APIs so compatible models can use deferred tool loading.
-
-The agent-independent registry should expose searchable routing metadata, but activation remains an adapter concern.
+Catalog ranking and request validation are agent-independent in `src/catalog.ts`; Pi ownership, active sets, schema, details, and rendering remain adapter concerns.
 
 ## Native CLI tool contract
 
@@ -364,7 +375,7 @@ The implemented v0.2 retrieval order is:
 1. Installed version and explicitly requested local help.
 2. For top-level requests only, a configured local man page when help is unavailable or fails.
 
-Cached/live official documentation and focused query search remain v0.3 work. v0.2 validates `docs.official` metadata but does not use or fetch it and does not claim version alignment.
+v0.3 retains this local retrieval order when operation is omitted or explicitly `local`. The `official` operation instead requires a focused lexical query and uses only strict configured authoritative HTTPS sources. It does not implicitly activate the selected native tool or run local help/man. Installed version is retrieved separately and lazily only for fixed exact/version-match policies with an explicit strict SemVer parser; reported states are factual exact, major, or major/minor matches rather than compatibility guarantees.
 
 The v0.2 tool returns:
 
@@ -375,7 +386,7 @@ The v0.2 tool returns:
 - Cache and truncation status
 - Ordered bounded attempt metadata
 
-It never injects an entire manual into context. Remote source URLs and version-alignment metadata are future v0.3 fields, not v0.2 claims.
+It never injects an entire manual into context. Official results contain bounded excerpts labeled as untrusted external reference data plus exact URL/domain, redirects, cache state, retrieval time, media, digests, snippet offsets/hashes, version evidence, and explicit alignment.
 
 ### Official documentation boundaries
 
@@ -558,13 +569,14 @@ The initial idea is validated when:
 - Cache only complete successful local introspection by definition, executable/helper, environment, cwd, operation, and subcommand identity.
 - Deduplicate concurrent identical requests and abort/clear session-local state on shutdown.
 
-### v0.3 — Scale and official documentation
+### v0.3 — Scale and official documentation (implemented; awaiting independent review)
 
-- Add lazy tool activation and a registry search/enable tool.
-- Configure authoritative documentation URLs and domains per CLI.
-- Add bounded fetching, caching, and focused local search.
-- Associate documentation with installed versions where supported.
-- Return explicit source provenance and version-alignment status.
+- Register eligible native tools before applying eager/lazy session policy.
+- Search trusted final registry metadata and additively enable exact registry IDs through `cli_tools`.
+- Configure strict authoritative documentation source objects for bundled GitHub CLI and ripgrep.
+- Fetch only on explicit official queries through pinned, public-address-only HTTPS with per-hop validation.
+- Cache complete successful documents in bounded session memory and run deterministic focused lexical search.
+- Retrieve installed-version evidence only for supported fixed policies and return explicit alignment/provenance.
 
 ### v1.0 — Stabilized adapter boundary
 
@@ -583,4 +595,4 @@ agent-independent CLI core
 
 Ship the first implementation as a single Pi package with two contrasting CLI definitions and controlled fixture executables. Keep the Pi-specific extension separate from the registry, runner, introspection, and documentation modules, but optimize first for proving the generic execution contract.
 
-Do not begin remote documentation retrieval until registry loading, shell-free execution, cancellation, timeout, output bounding, and diagnostics are tested and stable.
+Remote documentation retrieval was introduced in v0.3 only after registry loading, shell-free execution, cancellation, timeout, output bounding, local introspection, and diagnostics had independent reviewed baselines. It remains fixed-source retrieval rather than arbitrary browsing.

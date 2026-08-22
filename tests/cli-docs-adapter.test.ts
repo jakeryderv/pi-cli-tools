@@ -49,15 +49,15 @@ describePosix("shared cli_docs Pi adapter", () => {
 		const harness = createMockPi();
 		const state = createPiCliToolsState(createRegistry([definition]));
 		await activatePiCliTools(harness.api, state, root);
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_fixture", "cli_docs"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_fixture", "cli_tools", "cli_docs"]);
 		expect(state.docs.status).toBe("registered");
 		const docs = requireTool(harness.tools, "cli_docs");
-		expect(docs.description).toContain("does not fetch remote documentation");
-		expect(docs.description).toContain("Prefer an allowed subcommand path");
-		expect(docs.description).not.toContain("no network access");
+		expect(docs.description).toContain("operation=official");
+		expect(docs.description).toContain("Omit operation (or use local)");
+		expect(docs.description).toContain("Never accepts a URL");
 		const schema = docs.parameters;
 		expect(Value.Check(schema, { tool: "cli_fixture" })).toBe(true);
-		expect(Value.Check(schema, { tool: "fixture" })).toBe(false);
+		expect(Value.Check(schema, { tool: "fixture" })).toBe(true); // Exact ownership is enforced after middleware.
 		expect(Value.Check(schema, { tool: "cli_fixture", executable: "/bin/tool" })).toBe(false);
 		expect(Value.Check(schema, { tool: "cli_fixture", subcommand: ["pr", "create"] })).toBe(true);
 		expect(Value.Check(schema, { tool: "cli_fixture", subcommand: ["--help"] })).toBe(false);
@@ -122,6 +122,17 @@ describePosix("shared cli_docs Pi adapter", () => {
 			cwd: root,
 		} as ExtensionContext);
 		expect(oversizedUnknown.details).toMatchObject({ kind: "docs_request_error", toolName: null });
+		const noOfficial = await docs.execute(
+			"no-official",
+			{ tool: "cli_fixture", operation: "official", query: "authentication" },
+			undefined,
+			undefined,
+			{ cwd: root } as ExtensionContext,
+		);
+		expect(noOfficial.details).toMatchObject({
+			kind: "docs_request_error",
+			code: "official_not_configured",
+		});
 		expect(Buffer.byteLength(JSON.stringify(oversizedUnknown.details), "utf8")).toBeLessThan(1_024);
 
 		const registered = state.registered[0];
@@ -208,7 +219,7 @@ describePosix("shared cli_docs Pi adapter", () => {
 		const harness = createMockPi({ existingTools: [createToolInfo("cli_docs", "extension:earlier")] });
 		const state = createPiCliToolsState(createRegistry([docsDefinition()]));
 		await activatePiCliTools(harness.api, state, root);
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_fixture"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_fixture", "cli_tools"]);
 		expect(state.docs).toMatchObject({ status: "collision", collisionOwner: { source: "extension:earlier" } });
 		expect(formatCliToolsDiagnostics(state, [...harness.activeNames])).toContain("existing owner: extension:earlier");
 	});
@@ -233,7 +244,7 @@ describePosix("shared cli_docs Pi adapter", () => {
 				} as Parameters<NonNullable<typeof docs.renderCall>>[2])
 				.render(200)
 				.join("\n"),
-		).toContain("cli_docs cli_fixture pr");
+		).toContain("cli_docs local cli_fixture pr");
 		const boundedCall = docs
 			.renderCall({ tool: "x".repeat(100_000), subcommand: ["y".repeat(100_000)] }, theme, {
 				argsComplete: true,
@@ -247,7 +258,7 @@ describePosix("shared cli_docs Pi adapter", () => {
 				.render(200)
 				.join("\n")
 				.trimEnd(),
-		).toBe("Inspecting local CLI docs…");
+		).toBe("Retrieving CLI docs…");
 		expect(
 			docs
 				.renderResult(cached, { expanded: false, isPartial: false }, theme, { isError: false } as never)

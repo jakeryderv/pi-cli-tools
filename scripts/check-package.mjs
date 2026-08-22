@@ -31,6 +31,8 @@ const expectedFiles = new Set([
 	"extensions/pi-adapter.ts",
 	"package.json",
 	"src/cache.ts",
+	"src/catalog.ts",
+	"src/docs.ts",
 	"src/errors.ts",
 	"src/introspect.ts",
 	"src/limits.ts",
@@ -38,6 +40,8 @@ const expectedFiles = new Set([
 	"src/process-lifecycle.ts",
 	"src/registry.ts",
 	"src/runner.ts",
+	"src/secure-fetch.ts",
+	"src/semver.ts",
 	"src/spool.ts",
 	"src/types.ts",
 	"tools/github.yaml",
@@ -65,6 +69,9 @@ for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", 
 }
 if (packageManifest.dependencies?.yaml !== "2.9.0") {
 	throw new Error("The YAML runtime dependency must be present in production dependencies");
+}
+if (packageManifest.dependencies?.htmlparser2 !== "12.0.0") {
+	throw new Error("The bounded HTML parser must be present in production dependencies");
 }
 
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");

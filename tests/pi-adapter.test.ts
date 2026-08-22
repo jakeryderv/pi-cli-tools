@@ -194,7 +194,12 @@ describePosix("registration planning and discovery", () => {
 
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_available_two", "cli_docs"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual([
+			"cli_available",
+			"cli_available_two",
+			"cli_tools",
+			"cli_docs",
+		]);
 		expect(state.discoveries.map(({ registry: entry, status }) => [entry.definition.id, status])).toEqual([
 			["available", "available"],
 			["available-two", "available"],
@@ -219,14 +224,15 @@ describePosix("registration planning and discovery", () => {
 		expect(diagnostics).not.toContain("inactive or filtered by Pi");
 	});
 
-	it("keeps Pi-filtered registrations visible as inactive", async () => {
+	it("restores eager registrations when Pi initially leaves them inactive", async () => {
 		const harness = createMockPi({ activateRegisteredTools: false });
 		const state = createPiCliToolsState(createRegistry([createDefinition("available", "cli_available")]));
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_docs"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_tools", "cli_docs"]);
 		expect(state.registered[0]?.activeAtRegistration).toBe(false);
-		expect(formatCliToolsDiagnostics(state, [])).toContain("[inactive or filtered by Pi;");
+		expect(state.registered[0]?.active).toBe(true);
+		expect(formatCliToolsDiagnostics(state, [])).toContain("[inactive; policy=eager;");
 	});
 
 	it("does not register callable tools on unsupported platforms", async () => {
@@ -234,7 +240,7 @@ describePosix("registration planning and discovery", () => {
 		const state = createPiCliToolsState(createRegistry([createDefinition("available", "cli_available")]));
 		await activatePiCliTools(harness.api, state, root, "win32");
 
-		expect(harness.tools).toEqual([]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_tools"]);
 		expect(state.unsupported).toHaveLength(1);
 		expect(formatCliToolsDiagnostics(state, [])).toContain("Unsupported platform:");
 	});
@@ -260,7 +266,7 @@ describePosix("registration planning and discovery", () => {
 
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_startup", "cli_docs"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_startup", "cli_tools", "cli_docs"]);
 		await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });
@@ -337,8 +343,12 @@ describe("bounded human diagnostics", () => {
 		state.registered = [
 			{
 				discovery,
+				policy: "eager",
 				activeAtRegistration: true,
+				active: true,
+				activationOrigin: "initial_eager",
 				ownerAtRegistration: createToolInfo("cli_fixture", "extension:pi-cli-tools").sourceInfo,
+				lastActivationFailure: null,
 			},
 		];
 		const current = createToolInfo("cli_fixture", "extension:late-owner");

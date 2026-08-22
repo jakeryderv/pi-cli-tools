@@ -66,6 +66,7 @@
 		"vitest": "4.1.11"
 	},
 	"dependencies": {
+		"htmlparser2": "12.0.0",
 		"yaml": "2.9.0"
 	}
 }

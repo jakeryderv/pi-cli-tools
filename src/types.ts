@@ -9,6 +9,9 @@ import {
 	CLI_DOCS_MAX_SUBCOMMAND_SEGMENTS,
 	CLI_INTROSPECTION_MAX_TIMEOUT_MS,
 	CLI_INTROSPECTION_SUBCOMMAND_APPEND_MAX_ARGUMENTS,
+	CLI_OFFICIAL_MAX_ALLOWED_HOSTS,
+	CLI_OFFICIAL_MAX_SOURCES,
+	CLI_OFFICIAL_MAX_TOPICS,
 	CLI_MAX_PROCESS_EXIT_CODE,
 	CLI_MAX_TIMEOUT_MS,
 	CLI_MIN_TIMEOUT_MS,
@@ -55,6 +58,59 @@ const RoutingListSchema = Type.Array(Type.String({ minLength: 1, maxLength: 512 
 	uniqueItems: true,
 });
 
+const RoutingKeywordsSchema = Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+	maxItems: 32,
+	uniqueItems: true,
+});
+
+const OfficialHostSchema = Type.String({ minLength: 4, maxLength: 253, pattern: "^[a-z0-9.-]+$" });
+
+const OfficialAlignmentSchema = Type.Union([
+	Type.Object({ mode: Type.Literal("latest") }, { additionalProperties: false }),
+	Type.Object({ mode: Type.Literal("unversioned") }, { additionalProperties: false }),
+	Type.Object({ mode: Type.Literal("unknown") }, { additionalProperties: false }),
+	Type.Object(
+		{
+			mode: Type.Literal("exact"),
+			version: Type.String({ minLength: 5, maxLength: 64 }),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			mode: Type.Literal("compatible"),
+			version: Type.String({ minLength: 5, maxLength: 64 }),
+			precision: Type.Union([Type.Literal("major"), Type.Literal("major_minor")]),
+		},
+		{ additionalProperties: false },
+	),
+]);
+
+export const OfficialDocumentationSourceSchema = Type.Object(
+	{
+		id: RegistryIdSchema,
+		title: Type.String({ minLength: 1, maxLength: 128 }),
+		url: Type.String({ minLength: 10, maxLength: 2048 }),
+		allowed_hosts: Type.Array(OfficialHostSchema, {
+			minItems: 1,
+			maxItems: CLI_OFFICIAL_MAX_ALLOWED_HOSTS,
+			uniqueItems: true,
+		}),
+		allowed_path_prefix: Type.String({ minLength: 1, maxLength: 1024, pattern: "^/" }),
+		media: Type.Union([Type.Literal("html"), Type.Literal("markdown"), Type.Literal("text")]),
+		topics: Type.Optional(
+			Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+				maxItems: CLI_OFFICIAL_MAX_TOPICS,
+				uniqueItems: true,
+			}),
+		),
+		alignment: OfficialAlignmentSchema,
+	},
+	{ additionalProperties: false },
+);
+
+export type OfficialDocumentationSource = Static<typeof OfficialDocumentationSourceSchema>;
+
 export const AcceptedExitCodesSchema = Type.Array(Type.Integer({ minimum: 0, maximum: CLI_MAX_PROCESS_EXIT_CODE }), {
 	minItems: 1,
 	maxItems: CLI_MAX_ACCEPTED_EXIT_CODES,
@@ -66,6 +122,16 @@ const IntrospectionCommandSchema = Type.Object(
 		args: IntrospectionArgumentListSchema,
 		accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
 		timeout_ms: Type.Optional(Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_INTROSPECTION_MAX_TIMEOUT_MS })),
+	},
+	{ additionalProperties: false },
+);
+
+const VersionIntrospectionCommandSchema = Type.Object(
+	{
+		args: IntrospectionArgumentListSchema,
+		accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
+		timeout_ms: Type.Optional(Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_INTROSPECTION_MAX_TIMEOUT_MS })),
+		parse: Type.Optional(Type.Object({ kind: Type.Literal("semver_first") }, { additionalProperties: false })),
 	},
 	{ additionalProperties: false },
 );
@@ -107,10 +173,12 @@ export const RegistryDefinitionSchema = Type.Object(
 	{
 		id: RegistryIdSchema,
 		tool_name: ToolNameSchema,
+		activation: Type.Optional(Type.Union([Type.Literal("eager"), Type.Literal("lazy")])),
 		binary: BinaryCandidatesSchema,
 		routing: Type.Object(
 			{
 				description: Type.String({ minLength: 1, maxLength: 2048 }),
+				keywords: Type.Optional(RoutingKeywordsSchema),
 				prefer_for: Type.Optional(RoutingListSchema),
 				avoid_for: Type.Optional(RoutingListSchema),
 			},
@@ -118,7 +186,7 @@ export const RegistryDefinitionSchema = Type.Object(
 		),
 		introspection: Type.Object(
 			{
-				version: Type.Optional(IntrospectionCommandSchema),
+				version: Type.Optional(VersionIntrospectionCommandSchema),
 				help: Type.Optional(IntrospectionCommandSchema),
 				subcommand_help: Type.Optional(SubcommandHelpCommandSchema),
 				man: Type.Union([Type.Literal(false), ManCommandSchema]),
@@ -127,9 +195,8 @@ export const RegistryDefinitionSchema = Type.Object(
 		),
 		docs: Type.Object(
 			{
-				official: Type.Array(Type.String({ minLength: 1, maxLength: 2048 }), {
-					maxItems: 16,
-					uniqueItems: true,
+				official: Type.Array(OfficialDocumentationSourceSchema, {
+					maxItems: CLI_OFFICIAL_MAX_SOURCES,
 				}),
 			},
 			{ additionalProperties: false },
@@ -516,4 +583,115 @@ export interface CliDocsResult {
 	readonly attempts: readonly LocalIntrospectionOutcome[];
 	readonly definitionSha256: string;
 	readonly executableIdentitySha256: string | null;
+}
+
+export interface CliVersionEvidenceResult {
+	readonly outcome: LocalIntrospectionOutcome;
+	readonly definitionSha256: string;
+	readonly executableIdentitySha256: string | null;
+}
+
+export type OfficialDocumentationCacheStatus = "hit" | "miss";
+export type OfficialDocumentationAlignmentState =
+	"exact" | "major_match" | "major_minor_match" | "unversioned" | "unknown" | "mismatch";
+
+export interface InstalledVersionEvidence {
+	readonly parser: "semver_first";
+	readonly raw: string;
+	readonly normalizedVersion: string | null;
+	readonly source: "installed_version_command";
+	readonly definitionSha256: string;
+	readonly executableIdentitySha256: string | null;
+}
+
+export interface OfficialDocumentationAlignment {
+	readonly state: OfficialDocumentationAlignmentState;
+	readonly installedVersion: string | null;
+	readonly sourceVersion: string | null;
+	readonly precision: "exact" | "major_minor" | "major" | null;
+	readonly basis: "fixed_exact" | "fixed_version_match" | "declared_latest" | "declared_unversioned" | "unparsed";
+	readonly evidenceSource: "installed_version_command" | null;
+	readonly evidenceDefinitionSha256: string | null;
+	readonly evidenceExecutableIdentitySha256: string | null;
+}
+
+export interface OfficialDocumentationSnippet {
+	readonly sourceId: string;
+	readonly heading: string | null;
+	readonly offset: number;
+	readonly score: number;
+	readonly text: string;
+	readonly sha256: string;
+}
+
+export interface OfficialDocumentationProvenance {
+	readonly sourceId: string;
+	readonly title: string;
+	readonly configuredUrl: string;
+	readonly finalUrl: string;
+	readonly redirects: readonly string[];
+	readonly domain: string;
+	readonly mediaType: string;
+	readonly cache: OfficialDocumentationCacheStatus;
+	readonly retrievedAt: string;
+	readonly bodySha256: string;
+	readonly textSha256: string;
+	readonly alignment: OfficialDocumentationAlignment;
+}
+
+export type OfficialDocumentationFailureCode =
+	| "invalid_request"
+	| "cancelled"
+	| "timeout"
+	| "dns_error"
+	| "unsafe_address"
+	| "tls_error"
+	| "network_error"
+	| "peer_mismatch"
+	| "redirect_error"
+	| "status_error"
+	| "headers_too_large"
+	| "body_too_large"
+	| "truncated_body"
+	| "wrong_type"
+	| "unsupported_encoding"
+	| "invalid_utf8"
+	| "empty_document"
+	| "parse_error"
+	| "concurrency_limit";
+
+export interface OfficialDocumentationSourceSuccess {
+	readonly status: "ok";
+	readonly sourceId: string;
+	readonly provenance: OfficialDocumentationProvenance;
+	readonly snippets: readonly OfficialDocumentationSnippet[];
+}
+
+export interface OfficialDocumentationSourceFailure {
+	readonly status: "failed";
+	readonly sourceId: string;
+	readonly code: OfficialDocumentationFailureCode;
+	readonly message: string;
+}
+
+export type OfficialDocumentationSourceOutcome =
+	OfficialDocumentationSourceSuccess | OfficialDocumentationSourceFailure;
+
+export interface OfficialDocumentationRequest {
+	readonly registry: LoadedRegistryDefinition;
+	readonly query: string;
+	readonly installedVersion?: InstalledVersionEvidence;
+	readonly signal?: AbortSignal;
+}
+
+export interface OfficialDocumentationResult {
+	readonly status: "ok" | "failed";
+	readonly registryId: string;
+	readonly toolName: string;
+	readonly query: string;
+	readonly outcomes: readonly OfficialDocumentationSourceOutcome[];
+	readonly snippets: readonly (OfficialDocumentationSnippet & {
+		readonly provenance: OfficialDocumentationProvenance;
+	})[];
+	readonly definitionSha256: string;
 }
