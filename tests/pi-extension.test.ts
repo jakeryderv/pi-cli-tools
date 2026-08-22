@@ -63,7 +63,7 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_gh", "cli_docs"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_gh", "cli_tools", "cli_docs"]);
 		const tool = harness.tools[0];
 		if (!tool) throw new Error("expected registered tool");
 		const nonzero = await tool.execute(
@@ -141,6 +141,38 @@ describePosix("Pi extension lifecycle adaptation", () => {
 			details: docsSuccess.details,
 		});
 		expect(successfulDocsPatches).toEqual([undefined]);
+
+		const officialFailurePatches = await harness.emit("tool_result", {
+			type: "tool_result",
+			toolName: "cli_docs",
+			details: {
+				adapter: "pi-cli-tools",
+				kind: "official_docs",
+				status: "failed",
+				registryId: "github",
+				toolName: "cli_gh",
+				query: "authentication",
+				outcomes: [{ status: "failed", sourceId: "manual", code: "dns_error" }],
+				definitionSha256: "a".repeat(64),
+			},
+		});
+		expect(officialFailurePatches).toEqual([{ isError: true }]);
+
+		const catalog = harness.tools.find(({ name }) => name === "cli_tools");
+		if (!catalog) throw new Error("expected cli_tools");
+		const catalogFailure = await catalog.execute(
+			"catalog-failure",
+			{ action: "enable", ids: ["unknown"] },
+			undefined,
+			undefined,
+			harness.context(root) as unknown as Parameters<typeof catalog.execute>[4],
+		);
+		const catalogPatches = await harness.emit("tool_result", {
+			type: "tool_result",
+			toolName: "cli_tools",
+			details: catalogFailure.details,
+		});
+		expect(catalogPatches).toEqual([{ isError: true }]);
 	});
 
 	it("preserves an earlier middleware error decision for an accepted nonzero CLI exit", async () => {
@@ -242,7 +274,7 @@ describePosix("Pi extension lifecycle adaptation", () => {
 			collisionHarness.context(root),
 		);
 
-		expect(collisionHarness.tools).toEqual([]);
+		expect(collisionHarness.tools.map(({ name }) => name)).toEqual(["cli_tools"]);
 		await runDiagnostics(collisionHarness, root);
 		expect(collisionHarness.notifications.at(-1)).toMatchObject({ severity: "warning" });
 		expect(collisionHarness.notifications.at(-1)?.message).toContain("[tool_name_collision]");
@@ -272,7 +304,7 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		await cliToolsExtension(harness.api);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 
-		expect(harness.tools).toEqual([]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_tools"]);
 		await runDiagnostics(harness, root);
 		expect(harness.notifications.at(-1)).toMatchObject({ severity: "warning" });
 		expect(harness.notifications.at(-1)?.message).toContain("github: invalid_override");
@@ -286,13 +318,13 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		await cliToolsExtension(harness.api);
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 
-		expect(harness.tools).toEqual([]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_tools"]);
 		await runDiagnostics(harness, root);
 		expect(harness.notifications.at(-1)).toMatchObject({ severity: "info" });
 		expect(harness.notifications.at(-1)?.message).toContain("Missing: 2");
 		expect(harness.notifications.at(-1)?.message).toContain("cli_gh (github)");
 		expect(harness.notifications.at(-1)?.message).toContain("cli_rg (ripgrep)");
-		expect(harness.notifications.at(-1)?.message).toContain("Run /reload after installing");
+		expect(harness.notifications.at(-1)?.message).toContain("Run /reload after executable or registry changes");
 	});
 
 	async function writeDefinition(definition: ReturnType<typeof createDefinition>): Promise<void> {

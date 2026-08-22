@@ -26,6 +26,45 @@ export const CLI_INTROSPECTION_CACHE_MAX_ENTRIES = 128;
 export const CLI_INTROSPECTION_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 export const CLI_INTROSPECTION_CACHE_MAX_FLIGHTS = 32;
 
+// Registry catalog search and explicit activation.
+export const CLI_CATALOG_MAX_QUERY_BYTES = 512;
+export const CLI_CATALOG_MAX_QUERY_TERMS = 32;
+export const CLI_CATALOG_MAX_RESULTS = 10;
+export const CLI_CATALOG_DEFAULT_RESULTS = 5;
+export const CLI_CATALOG_MAX_ENABLE_IDS = 10;
+
+// Official documentation retrieval and focused lexical search. These limits are
+// fixed runtime policy and are never registry- or model-selectable.
+export const CLI_OFFICIAL_MAX_SOURCES = 4;
+export const CLI_OFFICIAL_MAX_ALLOWED_HOSTS = 8;
+export const CLI_OFFICIAL_MAX_TOPICS = 16;
+export const CLI_OFFICIAL_MAX_QUERY_BYTES = 256;
+export const CLI_OFFICIAL_MAX_QUERY_TERMS = 16;
+export const CLI_OFFICIAL_MAX_DNS_ANSWERS = 16;
+export const CLI_OFFICIAL_MAX_ADDRESS_ATTEMPTS = 2;
+export const CLI_OFFICIAL_MAX_REDIRECTS = 3;
+export const CLI_OFFICIAL_MAX_HTTP_HOPS = 12;
+export const CLI_OFFICIAL_MAX_HEADER_BYTES = 16 * 1024;
+export const CLI_OFFICIAL_MAX_BODY_BYTES = 1024 * 1024;
+export const CLI_OFFICIAL_MAX_AGGREGATE_BODY_BYTES = 2 * 1024 * 1024;
+export const CLI_OFFICIAL_MAX_TEXT_BYTES = 512 * 1024;
+export const CLI_OFFICIAL_MAX_TEXT_LINES = 10_000;
+export const CLI_OFFICIAL_DNS_TIMEOUT_MS = 2_000;
+export const CLI_OFFICIAL_CONNECT_TIMEOUT_MS = 3_000;
+export const CLI_OFFICIAL_HEADERS_TIMEOUT_MS = 5_000;
+export const CLI_OFFICIAL_BODY_INACTIVITY_MS = 2_000;
+export const CLI_OFFICIAL_SOURCE_TIMEOUT_MS = 10_000;
+export const CLI_OFFICIAL_AGGREGATE_TIMEOUT_MS = 15_000;
+export const CLI_OFFICIAL_CACHE_MAX_ENTRIES = 32;
+export const CLI_OFFICIAL_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+export const CLI_OFFICIAL_CACHE_TTL_MS = 5 * 60 * 1_000;
+export const CLI_OFFICIAL_CACHE_MAX_FLIGHTS = 8;
+export const CLI_OFFICIAL_MAX_SNIPPETS = 8;
+export const CLI_OFFICIAL_MAX_SNIPPET_BYTES = 2 * 1024;
+export const CLI_OFFICIAL_MAX_SNIPPET_LINES = 40;
+export const CLI_OFFICIAL_MAX_EXCERPT_BYTES = 24 * 1024;
+export const CLI_OFFICIAL_MAX_EXCERPT_LINES = 300;
+
 // Leave room for status and stream labels in the Pi adapter.
 export const CLI_MAX_RETURNED_OUTPUT_BYTES = 48 * 1024;
 export const CLI_MAX_RETURNED_OUTPUT_LINES = 1_980;

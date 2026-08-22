@@ -1,11 +1,13 @@
 id: ripgrep
 tool_name: cli_rg
+activation: eager
 
 binary:
   candidates: [rg]
 
 routing:
   description: Search local files recursively with ripgrep for advanced literal, regular-expression, file-type, and ignore-aware queries. Pass an explicit search path such as ".".
+  keywords: [ripgrep, rg, search, regex, files]
   prefer_for:
     - advanced local searches that need ripgrep flags, regular expressions, file types, or ignore behavior
     - locating matching lines or files across a local directory tree
@@ -27,7 +29,15 @@ introspection:
 
 docs:
   official:
-    - https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md
+    - id: ripgrep-guide
+      title: ripgrep user guide
+      url: https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md
+      allowed_hosts: [github.com]
+      allowed_path_prefix: /BurntSushi/ripgrep/
+      media: html
+      topics: [regular expressions, ignore files, file types, performance]
+      alignment:
+        mode: latest
 
 execution:
   timeout_ms: 120000

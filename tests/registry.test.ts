@@ -194,8 +194,8 @@ describe("loadRegistry", () => {
 		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_definition" })]);
 	});
 
-	it("reserves cli_docs for the shared adapter tool", async () => {
-		await writeYaml(bundledDirectory, "invalid.yaml", createDefinition("docs-owner", "cli_docs"));
+	it.each(["cli_docs", "cli_tools"])("reserves %s for a shared adapter tool", async (toolName) => {
+		await writeYaml(bundledDirectory, "invalid.yaml", createDefinition("shared-owner", toolName));
 		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
 		expect(result.definitions).toEqual([]);
 		expect(result.issues[0]).toMatchObject({ code: "invalid_definition" });
@@ -421,15 +421,131 @@ describe("loadRegistry", () => {
 		expect(result.issues).toEqual([expect.objectContaining({ code: "yaml_parse_error" })]);
 	});
 
-	it("loads JSON definitions and rejects unsupported documentation URL protocols", async () => {
+	it("keeps user definitions without remote sources compatible", async () => {
 		const definition = createDefinition();
-		definition.docs.official = ["file:///tmp/manual"];
+		definition.docs.official = [];
+		await writeYaml(bundledDirectory, "local-only.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.issues).toEqual([]);
+		expect(requireDefinition(result).docs.official).toEqual([]);
+	});
+
+	it("accepts strict official sources and exact version policy only with an explicit parser", async () => {
+		const definition = createDefinition();
+		definition.introspection.version = { args: ["--version"], parse: { kind: "semver_first" } };
+		const configuredSource = definition.docs.official[0];
+		if (!configuredSource) throw new Error("expected official source");
+		definition.docs.official[0] = {
+			...configuredSource,
+			alignment: { mode: "exact", version: "1.2.3" },
+		};
+		await writeYaml(bundledDirectory, "valid.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.issues).toEqual([]);
+		expect(requireDefinition(result).docs.official[0]).toMatchObject({
+			id: "manual",
+			allowed_hosts: ["example.com"],
+			alignment: { mode: "exact", version: "1.2.3" },
+		});
+	});
+
+	it.each([
+		["legacy scalar", "https://example.com/docs"],
+		["HTTP", officialSource({ url: "http://example.com/docs" })],
+		["userinfo", officialSource({ url: "https://user@example.com/docs" })],
+		["query", officialSource({ url: "https://example.com/docs?q=x" })],
+		["fragment", officialSource({ url: "https://example.com/docs#x" })],
+		["IP literal", officialSource({ url: "https://127.0.0.1/docs", allowed_hosts: ["127.0.0.1"] })],
+		["wildcard host", officialSource({ allowed_hosts: ["*.example.com"] })],
+		["trailing-dot host", officialSource({ url: "https://example.com./docs", allowed_hosts: ["example.com."] })],
+		["Unicode host", officialSource({ url: "https://éxample.com/docs", allowed_hosts: ["xn--xample-9ua.com"] })],
+		["backslash URL", officialSource({ url: "https://example.com\\docs" })],
+		["non-default port", officialSource({ url: "https://example.com:444/docs" })],
+		["host mismatch", officialSource({ allowed_hosts: ["docs.example.com"] })],
+		["path mismatch", officialSource({ allowed_path_prefix: "/manual/" })],
+		["path sibling", officialSource({ url: "https://example.com/docsevil", allowed_path_prefix: "/docs" })],
+		["encoded path separator", officialSource({ url: "https://example.com/docs%2f..%2fadmin" })],
+		["unknown field", { ...officialSource(), headers: { Accept: "text/plain" } }],
+	])("rejects %s official source metadata", async (_name, source) => {
+		const definition = createDefinition() as unknown as Record<string, unknown>;
+		(definition.docs as { official: unknown[] }).official = [source];
+		await writeYaml(bundledDirectory, "invalid.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues[0]?.code).toMatch(/invalid_(?:definition|url)/u);
+	});
+
+	it("accepts four reachable official sources", async () => {
+		const definition = createDefinition();
+		definition.docs.official = Array.from({ length: 4 }, (_, index) =>
+			officialSource({ id: `manual-${String(index)}`, url: `https://example.com/docs/${String(index)}` }),
+		) as never;
+		await writeYaml(bundledDirectory, "four-sources.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.issues).toEqual([]);
+		expect(requireDefinition(result).docs.official).toHaveLength(4);
+	});
+
+	it("rejects duplicate official source IDs and source-count overflow", async () => {
+		const duplicates = createDefinition("duplicates", "cli_duplicates");
+		duplicates.docs.official = [officialSource(), officialSource({ url: "https://example.com/docs/two" })] as never;
+		await writeYaml(bundledDirectory, "duplicates.yaml", duplicates);
+		const overflow = createDefinition("overflow", "cli_overflow");
+		overflow.docs.official = Array.from({ length: 5 }, (_, index) =>
+			officialSource({ id: `manual-${String(index)}`, url: `https://example.com/docs/${String(index)}` }),
+		) as never;
+		await writeYaml(bundledDirectory, "overflow.yaml", overflow);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toHaveLength(2);
+		expect(result.issues.every(({ code }) => code === "invalid_definition")).toBe(true);
+	});
+
+	it("quarantines an attributable user override with hostile remote metadata", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		await mkdir(userDirectory);
+		const override = createDefinition() as unknown as Record<string, unknown>;
+		(override.docs as { official: unknown[] }).official = [
+			officialSource({ url: "https://127.0.0.1/docs", allowed_hosts: ["127.0.0.1"] }),
+		];
+		await writeYaml(userDirectory, "github.yaml", override);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.quarantined).toEqual([expect.objectContaining({ id: "github", reason: "invalid_override" })]);
+	});
+
+	it("rejects SemVer-invalid fixed versions", async () => {
+		const definition = createDefinition();
+		definition.introspection.version = { args: ["--version"], parse: { kind: "semver_first" } };
+		definition.docs.official = [officialSource({ alignment: { mode: "exact", version: "1.2.3-01" } })] as never;
+		await writeYaml(bundledDirectory, "invalid-semver.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues[0]).toMatchObject({ code: "invalid_definition" });
+	});
+
+	it("rejects fixed version alignment without an installed-version parser", async () => {
+		const definition = createDefinition();
+		const configuredSource = definition.docs.official[0];
+		if (!configuredSource) throw new Error("expected official source");
+		definition.docs.official[0] = {
+			...configuredSource,
+			alignment: { mode: "compatible", version: "1.2.3", precision: "major_minor" },
+		};
+		await writeYaml(bundledDirectory, "invalid.yaml", definition);
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+		expect(result.definitions).toEqual([]);
+		expect(result.issues[0]).toMatchObject({ code: "invalid_definition" });
+	});
+
+	it("loads JSON definitions and rejects legacy scalar documentation sources", async () => {
+		const definition = createDefinition() as unknown as Record<string, unknown>;
+		(definition.docs as { official: unknown[] }).official = ["file:///tmp/manual"];
 		await writeFile(join(bundledDirectory, "github.json"), JSON.stringify(definition), "utf8");
 
 		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
 
 		expect(result.definitions).toEqual([]);
-		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_url" })]);
+		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_definition" })]);
 	});
 });
 
@@ -458,8 +574,33 @@ function createDefinition(id = "github", toolName = "cli_gh"): RegistryDefinitio
 			subcommand_help: { allowed_paths: [["pr"]], append_args: ["--help"] },
 			man: false,
 		},
-		docs: { official: ["https://example.com/docs"] },
+		docs: {
+			official: [
+				{
+					id: "manual",
+					title: "Fixture manual",
+					url: "https://example.com/docs",
+					allowed_hosts: ["example.com"],
+					allowed_path_prefix: "/docs",
+					media: "html",
+					alignment: { mode: "latest" },
+				},
+			],
+		},
 		execution: { timeout_ms: 120_000, cwd: "session", inherit_env: true },
+	};
+}
+
+function officialSource(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "manual",
+		title: "Fixture manual",
+		url: "https://example.com/docs",
+		allowed_hosts: ["example.com"],
+		allowed_path_prefix: "/docs",
+		media: "html",
+		alignment: { mode: "latest" },
+		...overrides,
 	};
 }
 

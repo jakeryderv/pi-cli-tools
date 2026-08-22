@@ -27,6 +27,7 @@ import type {
 	CliDiscovery,
 	CliDocsRequest,
 	CliDocsResult,
+	CliVersionEvidenceResult,
 	CliErrorDetails,
 	CliExecutionResult,
 	ExecutableIdentity,
@@ -416,6 +417,73 @@ export class LocalIntrospectionService {
 		} catch (error) {
 			if (aggregateSignal.aborted) {
 				return this.#cancelledResult(definition, validation.subcommand, definitionSha256, deadline.signal.aborted);
+			}
+			throw error;
+		} finally {
+			clearTimeout(deadlineTimer);
+		}
+	}
+
+	/** Retrieve only installed-version evidence for explicit official-version alignment. */
+	async inspectVersion(request: CliDocsRequest): Promise<CliVersionEvidenceResult> {
+		const { definition } = request.discovery.registry;
+		const definitionSha256 = hashCanonicalValue(definition);
+		const deadline = new AbortController();
+		const deadlineTimer = setTimeout(() => {
+			deadline.abort(new LocalIntrospectionDeadlineError());
+		}, this.#aggregateTimeoutMs);
+		deadlineTimer.unref();
+		const signal = AbortSignal.any(
+			[request.signal, this.#lifecycle.signal, deadline.signal].filter(
+				(candidate): candidate is AbortSignal => candidate !== undefined,
+			),
+		);
+		try {
+			if (this.#closed || signal.aborted) {
+				return {
+					outcome: failure("version", deadline.signal.aborted ? "timed_out" : "cancelled"),
+					definitionSha256,
+					executableIdentitySha256: null,
+				};
+			}
+			const initialIdentity = await fingerprintExecutable(request.discovery.resolution.executablePath, signal);
+			if (!initialIdentity) {
+				return {
+					outcome: { status: "unavailable", source: "version", code: "executable_unavailable" },
+					definitionSha256,
+					executableIdentitySha256: null,
+				};
+			}
+			const executableIdentitySha256 = hashCanonicalValue(initialIdentity);
+			this.#cache.prepareRegistry(definition.id, `${definitionSha256}:${executableIdentitySha256}`);
+			const hostEnvironment = snapshotEnvironment(this.#getHostEnvironment());
+			const selectedEnvironment = definition.execution.inherit_env ? hostEnvironment : {};
+			let outcome = await this.#retrieveSelected(
+				request,
+				"version",
+				[],
+				selectedEnvironment,
+				definitionSha256,
+				initialIdentity,
+				signal,
+			);
+			if (isSignalAborted(signal)) {
+				if (outcome.status === "ok") outcome = failure("version", failureCodeForAbort(signal));
+				return { outcome, definitionSha256, executableIdentitySha256 };
+			}
+			const finalIdentity = await fingerprintExecutable(request.discovery.resolution.executablePath, signal);
+			if (!finalIdentity || hashCanonicalValue(finalIdentity) !== executableIdentitySha256) {
+				outcome = identityFailureFromOutcome(outcome);
+			}
+			this.#recordOutcome(definition.id, outcome);
+			return { outcome, definitionSha256, executableIdentitySha256 };
+		} catch (error) {
+			if (signal.aborted) {
+				return {
+					outcome: failure("version", deadline.signal.aborted ? "timed_out" : "cancelled"),
+					definitionSha256,
+					executableIdentitySha256: null,
+				};
 			}
 			throw error;
 		} finally {

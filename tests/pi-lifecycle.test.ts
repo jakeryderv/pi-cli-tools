@@ -211,6 +211,66 @@ describePosix("real Pi lifecycle", () => {
 		}
 	}, 15_000);
 
+	it("records additive lazy activation and exposes the enabled tool on the next real Pi turn", async () => {
+		await writeFile(
+			join(agentDirectory, "cli-tools", "github.yaml"),
+			stringify(
+				createDefinition("github", "cli_gh", {
+					activation: "lazy",
+					binary: { candidates: ["fixture-cli"] },
+				}),
+			),
+			"utf8",
+		);
+		const faux = fauxProvider({ provider: "pi-cli-tools-lazy-activation" });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("cli_tools", { action: "enable", ids: ["github"] }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(fauxToolCall("cli_gh", { args: [fixturePath, "exit", "0"] }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("finished"),
+		]);
+		const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false });
+		modelRuntime.registerNativeProvider(faux.provider);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			model: faux.getModel(),
+			modelRuntime,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			expect(session.getAllTools().map(({ name }) => name)).toContain("cli_gh");
+			expect(session.getActiveToolNames()).not.toContain("cli_gh");
+			await session.prompt("Enable and use the GitHub fixture.");
+			expect(faux.state.callCount).toBe(3);
+			expect(session.getActiveToolNames()).toContain("cli_gh");
+			const loaderResult = session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "cli_tools",
+			);
+			expect(loaderResult).toMatchObject({
+				role: "toolResult",
+				isError: false,
+				addedToolNames: ["cli_gh"],
+			});
+			const nativeResult = session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "cli_gh",
+			);
+			expect(nativeResult).toMatchObject({ role: "toolResult", isError: false });
+			await session.reload();
+			expect(session.getActiveToolNames()).not.toContain("cli_gh");
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("executes through Pi's provider/tool pipeline and preserves nonzero error classification", async () => {
 		const faux = fauxProvider({ provider: "pi-cli-tools-test" });
 		faux.setResponses([
@@ -442,7 +502,7 @@ describePosix("real Pi lifecycle", () => {
 			await session.bindExtensions({ mode: "print" });
 			expect(session.getToolDefinition("cli_gh")?.label).toBe("Earlier owner");
 			const adapterExtension = loader.getExtensions().extensions.find(({ path }) => path.includes("pi-cli-tools"));
-			expect([...(adapterExtension?.tools.keys() ?? [])]).toEqual(["cli_rg", "cli_docs"]);
+			expect([...(adapterExtension?.tools.keys() ?? [])]).toEqual(["cli_rg", "cli_tools", "cli_docs"]);
 		} finally {
 			session.dispose();
 		}

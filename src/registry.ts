@@ -1,5 +1,6 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { isIP } from "node:net";
 
 import Value from "typebox/value";
 import { isMap, isScalar, parseDocument, type Document } from "yaml";
@@ -12,6 +13,7 @@ import {
 	type DisabledRegistryEntry,
 	type LoadedDisabledEntry,
 	type LoadedRegistryDefinition,
+	type OfficialDocumentationSource,
 	type RegistryDefinition,
 	type RegistryEntry,
 	type RegistryIssue,
@@ -28,6 +30,7 @@ import {
 	CLI_MAX_ARGUMENT_BYTES,
 	CLI_MAX_TOTAL_ARGUMENT_BYTES,
 } from "./limits.js";
+import { parseStrictSemver } from "./semver.js";
 
 const REGISTRY_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
 const MAX_REGISTRY_FILE_BYTES = 256 * 1024;
@@ -35,6 +38,11 @@ const MAX_REGISTRY_FILES_PER_LAYER = 256;
 const MAX_SCHEMA_ERRORS = 8;
 
 export const DEFAULT_ACCEPTED_EXIT_CODES = Object.freeze([0] as const);
+
+/** Omission remains eager for compatibility with pre-v0.3 user definitions. */
+export function getActivationPolicy(definition: RegistryDefinition): "eager" | "lazy" {
+	return definition.activation ?? "eager";
+}
 
 /** Resolve the authoritative definition policy without mutating parsed registry data. */
 export function getAcceptedExitCodes(definition: RegistryDefinition): readonly number[] {
@@ -300,8 +308,17 @@ function validateDefinition(
 	layer: RegistryLayer,
 	path: string,
 ): RegistryIssue | undefined {
-	if (definition.tool_name === "cli_docs") {
-		return createFileIssue("invalid_definition", layer, path, 'Pi tool name "cli_docs" is reserved');
+	if (definition.tool_name === "cli_docs" || definition.tool_name === "cli_tools") {
+		return createFileIssue("invalid_definition", layer, path, `Pi tool name "${definition.tool_name}" is reserved`);
+	}
+
+	if (
+		!isUtf8Within(definition.routing.description, 2_048) ||
+		definition.routing.keywords?.some((value) => !isUtf8Within(value, 64)) ||
+		definition.routing.prefer_for?.some((value) => !isUtf8Within(value, 512)) ||
+		definition.routing.avoid_for?.some((value) => !isUtf8Within(value, 512))
+	) {
+		return createFileIssue("invalid_definition", layer, path, "Routing metadata exceeds its UTF-8 byte bounds");
 	}
 
 	const acceptedExitPolicies = [
@@ -395,16 +412,141 @@ function validateDefinition(
 		return createFileIssue("invalid_definition", layer, path, "Man binary candidates cannot be '.' or '..'");
 	}
 
+	const officialIds = new Set<string>();
 	for (const source of definition.docs.official) {
-		try {
-			const url = new URL(source);
-			if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("unsupported protocol");
-		} catch {
-			return createFileIssue("invalid_url", layer, path, `Official documentation URL is invalid: ${source}`);
+		if (officialIds.has(source.id)) {
+			return createFileIssue("invalid_definition", layer, path, "Official documentation source IDs must be unique");
 		}
+		officialIds.add(source.id);
+		const sourceIssue = validateOfficialDocumentationSource(source, definition);
+		if (sourceIssue) return createFileIssue(sourceIssue.code, layer, path, sourceIssue.message);
 	}
 
 	return undefined;
+}
+
+function isAuthorizedOfficialPath(pathname: string, allowed: string): boolean {
+	return (
+		pathname === allowed || (allowed.endsWith("/") ? pathname.startsWith(allowed) : pathname.startsWith(`${allowed}/`))
+	);
+}
+
+function isSafeOfficialPath(pathname: string): boolean {
+	return pathname.startsWith("/") && !/%(?:25|2e|2f|5c)/iu.test(pathname) && !pathname.includes("\\");
+}
+
+function validateOfficialDocumentationSource(
+	source: OfficialDocumentationSource,
+	definition: RegistryDefinition,
+): { code: "invalid_definition" | "invalid_url"; message: string } | undefined {
+	if (!isUtf8Within(source.id, 64) || !isUtf8Within(source.title, 128)) {
+		return {
+			code: "invalid_definition",
+			message: `Official documentation source ${source.id} exceeds its UTF-8 metadata bound`,
+		};
+	}
+	if (!isAscii(source.url) || source.url.includes("\\") || hasAsciiControl(source.url)) {
+		return {
+			code: "invalid_url",
+			message: `Official documentation URL must use bounded ASCII without controls or backslashes: ${source.id}`,
+		};
+	}
+	let url: URL;
+	try {
+		url = new URL(source.url);
+	} catch {
+		return { code: "invalid_url", message: `Official documentation URL is invalid: ${source.id}` };
+	}
+	if (
+		url.protocol !== "https:" ||
+		url.port !== "" ||
+		url.username !== "" ||
+		url.password !== "" ||
+		url.search !== "" ||
+		url.hash !== "" ||
+		url.hostname !== url.hostname.toLowerCase() ||
+		!isValidDnsHostname(url.hostname)
+	) {
+		return {
+			code: "invalid_url",
+			message: `Official documentation URL must be fixed public-host HTTPS on port 443 without credentials, query, or fragment: ${source.id}`,
+		};
+	}
+	if (
+		source.allowed_hosts.some((host) => !isValidDnsHostname(host) || host !== host.toLowerCase()) ||
+		new Set(source.allowed_hosts).size !== source.allowed_hosts.length ||
+		!source.allowed_hosts.includes(url.hostname)
+	) {
+		return {
+			code: "invalid_url",
+			message: `Official documentation source ${source.id} must exactly allow its canonical URL hostname`,
+		};
+	}
+	if (
+		!isAscii(source.allowed_path_prefix) ||
+		source.allowed_path_prefix.includes("\\") ||
+		hasAsciiControl(source.allowed_path_prefix) ||
+		source.allowed_path_prefix.includes("?") ||
+		source.allowed_path_prefix.includes("#") ||
+		!isSafeOfficialPath(url.pathname) ||
+		!isSafeOfficialPath(source.allowed_path_prefix) ||
+		!isAuthorizedOfficialPath(url.pathname, source.allowed_path_prefix)
+	) {
+		return {
+			code: "invalid_url",
+			message: `Official documentation source ${source.id} has an invalid or non-authorizing path prefix`,
+		};
+	}
+	if (
+		source.topics?.some((topic) => !isUtf8Within(topic, 64)) ||
+		new Set(source.topics ?? []).size !== (source.topics?.length ?? 0)
+	) {
+		return {
+			code: "invalid_definition",
+			message: `Official documentation source ${source.id} has invalid or duplicate topics`,
+		};
+	}
+	if (source.alignment.mode === "exact" || source.alignment.mode === "compatible") {
+		if (parseStrictSemver(source.alignment.version) === null) {
+			return {
+				code: "invalid_definition",
+				message: `Official documentation source ${source.id} declares an invalid semantic version`,
+			};
+		}
+		if (definition.introspection.version?.parse?.kind !== "semver_first") {
+			return {
+				code: "invalid_definition",
+				message: `Official documentation source ${source.id} requires introspection.version.parse.kind=semver_first`,
+			};
+		}
+	}
+	return undefined;
+}
+
+function isValidDnsHostname(host: string): boolean {
+	if (host.length > 253 || host.endsWith(".") || host.includes("_") || host.includes("*") || isIP(host) !== 0) {
+		return false;
+	}
+	const labels = host.split(".");
+	return (
+		labels.length >= 2 &&
+		labels.every((label) => label.length >= 1 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label))
+	);
+}
+
+function isAscii(value: string): boolean {
+	return Array.from(value).every((character) => (character.codePointAt(0) ?? 0) <= 0x7f);
+}
+
+function hasAsciiControl(value: string): boolean {
+	return Array.from(value).some((character) => {
+		const code = character.codePointAt(0) ?? 0;
+		return code < 0x20 || code === 0x7f;
+	});
+}
+
+function isUtf8Within(value: string, maxBytes: number): boolean {
+	return Buffer.byteLength(value, "utf8") <= maxBytes;
 }
 
 function findToolNameConflicts(

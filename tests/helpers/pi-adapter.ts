@@ -16,6 +16,7 @@ export interface MockPiHarness {
 	commands: Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>;
 	activeNames: Set<string>;
 	notifications: { message: string; severity: string }[];
+	sourceOverrides: Map<string, ToolInfo["sourceInfo"] | null>;
 	emit(eventName: string, event: Record<string, unknown>, ctx?: Record<string, unknown>): Promise<unknown[]>;
 	context(cwd: string): Record<string, unknown>;
 }
@@ -25,6 +26,9 @@ export function createMockPi(
 		existingTools?: ToolInfo[];
 		activateRegisteredTools?: boolean;
 		registerToolError?: Error;
+		filteredToolNames?: readonly string[];
+		setActiveToolsErrorAfter?: number;
+		dropActiveToolNamesOnCall?: { readonly call: number; readonly names: readonly string[] };
 	} = {},
 ): MockPiHarness {
 	const handlers = new Map<string, MockEventHandler[]>();
@@ -32,6 +36,9 @@ export function createMockPi(
 	const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
 	const activeNames = new Set<string>();
 	const notifications: { message: string; severity: string }[] = [];
+	const sourceOverrides = new Map<string, ToolInfo["sourceInfo"] | null>();
+	const filteredToolNames = new Set(options.filteredToolNames ?? []);
+	let setActiveToolsCalls = 0;
 	const existingTools = [...(options.existingTools ?? [])];
 	for (const tool of existingTools) activeNames.add(tool.name);
 
@@ -52,17 +59,31 @@ export function createMockPi(
 		getAllTools(): ToolInfo[] {
 			return [
 				...existingTools,
-				...tools.map((tool) => ({
-					name: tool.name,
-					description: tool.description,
-					parameters: tool.parameters,
-					...(tool.promptGuidelines ? { promptGuidelines: tool.promptGuidelines } : {}),
-					sourceInfo: createSourceInfo(`<test:${tool.name}>`, "extension:test"),
-				})),
+				...tools
+					.filter((tool) => !filteredToolNames.has(tool.name) && sourceOverrides.get(tool.name) !== null)
+					.map((tool) => ({
+						name: tool.name,
+						description: tool.description,
+						parameters: tool.parameters,
+						...(tool.promptGuidelines ? { promptGuidelines: tool.promptGuidelines } : {}),
+						sourceInfo: sourceOverrides.get(tool.name) ?? createSourceInfo(`<test:${tool.name}>`, "extension:test"),
+					})),
 			];
 		},
 		getActiveTools(): string[] {
 			return [...activeNames];
+		},
+		setActiveTools(names: string[]) {
+			setActiveToolsCalls += 1;
+			if (options.setActiveToolsErrorAfter !== undefined && setActiveToolsCalls > options.setActiveToolsErrorAfter) {
+				throw new Error("mock activation failed");
+			}
+			const dropped =
+				options.dropActiveToolNamesOnCall?.call === setActiveToolsCalls
+					? new Set(options.dropActiveToolNamesOnCall.names)
+					: new Set<string>();
+			activeNames.clear();
+			for (const name of names) if (!dropped.has(name)) activeNames.add(name);
 		},
 	} as unknown as ExtensionAPI;
 
@@ -73,6 +94,7 @@ export function createMockPi(
 		commands,
 		activeNames,
 		notifications,
+		sourceOverrides,
 		async emit(eventName, event, ctx = harness.context(process.cwd())) {
 			const results: unknown[] = [];
 			for (const handler of handlers.get(eventName) ?? []) results.push(await handler(event, ctx));
