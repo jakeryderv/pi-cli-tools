@@ -4,114 +4,378 @@
 
 Build a **Pi package whose main component is a Pi extension** that registers installed, standalone command-line programs as native Pi tools.
 
-The package should keep the real capabilities agent-independent: Pi supplies the adapter, while a reusable CLI registry/runtime discovers tools, executes them, inspects their installed interfaces, and retrieves documentation. This gives Pi clear, first-class tools without replacing portable CLIs with a collection of agent-specific integrations.
+The package should keep the real capabilities agent-independent: Pi supplies the adapter, while a reusable CLI registry/runtime discovers tools, executes them, inspects their installed interfaces, and retrieves documentation. This gives Pi clear, first-class tools without replacing portable CLIs with agent-specific integrations.
 
 ```text
 Pi
   -> Pi extension / native-tool adapter
       -> agent-independent CLI registry and runtime
-          -> firecrawl, playwright, ctx7, gh, docker, ...
+          -> firecrawl, playwright, gh, docker, ...
 ```
+
+The first release should prove that a small native wrapper improves tool selection and execution reliability compared with asking the agent to invoke the same CLI through a general-purpose shell tool.
+
+## Goals
+
+- Make configured, installed CLIs discoverable as native Pi tools.
+- Give each CLI concise, curated routing guidance.
+- Execute explicit argument arrays without a shell.
+- Provide consistent cancellation, timeout, output handling, and diagnostics.
+- Use the installed executable for version-aligned syntax and local help.
+- Retrieve documentation on demand instead of placing manuals in the permanent prompt.
+- Keep registry, execution, introspection, and documentation logic independent of Pi.
+- Allow richer CLI-specific schemas later without requiring them for every tool.
+
+## Non-goals
+
+At least through the initial releases, the project will not:
+
+- Install, update, or authenticate CLIs automatically.
+- Sandbox installed programs or guarantee that a CLI operation is non-destructive.
+- Convert every CLI flag and subcommand into a large generated schema.
+- Infer execution safety from `--help` output.
+- Recursively introspect every possible subcommand at startup.
+- Crawl and index arbitrary documentation sites automatically.
+- Replace rich MCP or project-specific integrations when those are a better fit.
+- Extract multiple packages before another adapter or consumer justifies that cost.
+
+## Sources of truth
+
+Different parts of the system have different authorities:
+
+| Concern | Source of truth |
+| --- | --- |
+| Identity, routing, introspection strategy, execution policy | Declarative registry |
+| Availability, version, syntax, and local help | Installed executable |
+| Detailed behavior not available locally | Configured official documentation |
+
+Routing descriptions should remain curated and stable. Installed help may be used for documentation and validation, but should not silently rewrite a tool's routing description at runtime.
 
 ## Design principles
 
 - Prefer standalone CLIs for generic, global capabilities.
 - Register each configured CLI as a native Pi tool with a concise description of what it does, when to use it, and when not to use it.
 - Begin with a small, stable interface such as `{ "args": [...] }` instead of converting every CLI flag into a large tool schema.
-- Use the installed binary as the primary source of truth: detect its path and inspect its version, help output, subcommand help, and man pages.
+- Invoke a resolved executable directly with an argument array; never construct a shell command.
+- Perform only executable discovery during startup. Retrieve versions, help, and man pages lazily and cache the results.
+- Keep all command and documentation output bounded before returning it to the model.
 - Keep documentation out of the permanent prompt. Retrieve only the relevant material when the agent needs it.
 - Prefer local, version-aligned information before remote documentation.
+- Treat retrieved documentation and CLI output as reference data, not trusted agent instructions.
 - Keep the Pi adapter thin so the registry/runtime can later support other agent harnesses.
+- Keep routing metadata deterministic; avoid runtime-generated descriptions that make behavior and prompt caching unpredictable.
 
-## Main components
+## Architecture
 
 ```text
 pi-cli-tools/
 ├── package.json
 ├── extensions/
-│   └── cli-tools.ts       # Pi integration and tool registration
+│   └── cli-tools.ts       # Pi integration, registration, and commands
 ├── src/
-│   ├── registry.ts        # load and validate tool definitions
-│   ├── runner.ts          # safely execute configured binaries
-│   ├── introspect.ts      # PATH, version, help, and man discovery
-│   └── docs.ts            # documentation retrieval, search, and cache
-└── tools/
-    ├── firecrawl.yaml
-    ├── playwright.yaml
-    ├── context7.yaml
-    └── github.yaml
+│   ├── types.ts           # agent-independent contracts
+│   ├── registry.ts        # load, merge, and validate definitions
+│   ├── runner.ts          # bounded shell-free process execution
+│   ├── introspect.ts      # executable, version, help, and man discovery
+│   ├── docs.ts            # documentation retrieval and focused search
+│   └── cache.ts           # introspection and documentation cache
+├── tools/
+│   ├── firecrawl.yaml
+│   ├── playwright.yaml
+│   └── github.yaml
+└── tests/
+    └── fixtures/
+        └── bin/            # controlled fake executables for runner tests
 ```
 
-### Declarative registry
+The initial implementation should ship as one Pi package. Module boundaries should keep Pi-specific types out of `src/`, but the agent-independent modules should not be extracted into a separate package until there is a real second consumer.
 
-Each definition describes the executable, routing guidance, introspection commands, documentation sources, and execution policy.
+The package manifest should explicitly register `extensions/cli-tools.ts`. Pi runtime packages should be peer dependencies, while YAML parsing and other runtime libraries should be normal production dependencies.
+
+## Registry and configuration model
+
+### Registry definition
+
+Each definition has a stable registry identity, a Pi tool name, executable candidates, routing guidance, explicitly configured introspection commands, documentation sources, and execution settings.
 
 ```yaml
-name: firecrawl
-binary: firecrawl
+id: github
+tool_name: cli_gh
+
+binary:
+  candidates: ["gh"]
 
 routing:
-  description: Search, scrape, crawl, map, and extract web content.
+  description: Work with GitHub repositories, issues, pull requests, releases, and workflows.
   prefer_for:
-    - crawling websites
-    - structured web extraction
+    - querying or modifying GitHub resources
+    - GitHub API requests authenticated through the installed CLI
+  avoid_for:
+    - editing local Git history
 
-version:
-  args: ["--version"]
+introspection:
+  version:
+    args: ["--version"]
+  help:
+    args: ["--help"]
+  subcommand_help:
+    append_args: ["--help"]
+  man: false
 
 docs:
-  local_help: true
-  man: false
   official:
-    - https://docs.firecrawl.dev
+    - https://cli.github.com/manual/
 
 execution:
-  timeout: 120
+  timeout_ms: 120000
+  cwd: session
   inherit_env: true
 ```
 
-### Native CLI tools
+`id`, `tool_name`, and the executable name are intentionally separate. For example, a stable registry entry named `github` may expose `cli_gh` while invoking an executable named `gh`.
 
-At startup, the extension loads the registry, finds installed binaries, determines their versions, and registers one native Pi tool per available CLI.
+### Validation rules
+
+The registry should be validated before any tools are registered:
+
+- Registry IDs must be unique within a configuration layer.
+- Tool names must satisfy Pi's tool-name requirements.
+- Tool-name collisions with built-in or extension tools must fail clearly by default.
+- Definitions must use known fields and valid values.
+- Argument lists must contain strings only.
+- Timeouts and output limits must remain within hard runtime bounds.
+- A missing executable is an availability condition, not an extension startup failure.
+- An invalid definition is reported with its source file and is not registered.
+
+The runtime should not silently override an existing Pi tool. A future explicit opt-in may allow intentional overrides, but that is not part of v0.1.
+
+### Configuration layers
+
+The intended precedence is:
+
+```text
+1. Definitions bundled with the package
+2. User definitions and explicit overrides
+3. Trusted project definitions and overrides — later milestone
+```
+
+The canonical user configuration location can be `~/.pi/agent/cli-tools/`. Project-local configuration, if added, should be derived from Pi's configured project directory name rather than hardcoding `.pi`, and must only be read after the project is trusted.
+
+Definitions are merged by stable `id`. A later definition with the same ID replaces the complete earlier definition rather than performing an ambiguous deep merge. The final schema should also provide an explicit way for a user layer to disable a bundled definition.
+
+Duplicate IDs within the same layer are errors. Two enabled entries that resolve to the same `tool_name` are also errors.
+
+## Extension lifecycle and tool activation
+
+### Startup
+
+The extension should do only bounded local work during startup:
+
+1. Load and validate registry layers.
+2. Resolve executable candidates on `PATH`.
+3. Record the exact executable selected for each available entry.
+4. Register eligible Pi tools.
+5. Register a human-facing status command.
+6. Register the shared documentation tool once local introspection is introduced in v0.2.
+
+Startup should not run version, help, man, or network documentation commands.
+
+### Missing and changed executables
+
+A configured but missing executable should not produce a broken native tool. It should appear in diagnostics as unavailable, including the executable candidates that were checked.
+
+Execution should use the exact path selected during discovery rather than searching `PATH` again for every call. A reload or explicit refresh command may repeat discovery if the user installs or replaces a CLI during a session.
+
+### Activation and scale
+
+For the small v0.1 registry, available CLI tools may be active immediately.
+
+As the registry grows, the Pi adapter should support:
+
+- Registering tools while leaving selected tools inactive.
+- An always-active `cli_tools` search/list/enable tool.
+- Per-definition `eager` or `lazy` activation.
+- Additive activation through Pi's dynamic tool APIs so compatible models can use deferred tool loading.
+
+The agent-independent registry should expose searchable routing metadata, but activation remains an adapter concern.
+
+## Native CLI tool contract
+
+The generic v0.1 input is deliberately small:
 
 ```json
 {
-  "args": ["crawl", "https://example.com"]
+  "args": ["pr", "view", "42", "--json", "title,state"]
 }
 ```
 
-Richer, CLI-specific schemas can be added selectively after the generic interface is proven useful.
+The initial tool input should not expose arbitrary environment overrides, shell text, standard input, or a caller-selected executable. Commands run in Pi's current working directory unless the registry specifies a fixed alternative.
 
-### Shared `cli_docs` tool
+Richer CLI-specific tools may be added selectively after the generic interface is proven useful. Those tools may share the same runner and registry entry.
+
+### Execution contract
+
+For every invocation, the runner should:
+
+1. Use the exact executable path selected during discovery.
+2. Pass arguments directly to the process without a shell.
+3. Validate argument count and total argument size against hard limits.
+4. Use the session working directory or a configured fixed directory.
+5. Apply the configured environment policy.
+6. Honor the caller's cancellation signal.
+7. Enforce the configured timeout and terminate the process tree.
+8. Capture stdout and stderr separately.
+9. Preserve exit code, terminating signal, duration, timeout, and cancellation state.
+10. Bound all data returned to the model.
+
+“Safe execution” in this project means shell-free, bounded process invocation. It does not mean that the installed program is sandboxed, trustworthy, or non-destructive.
+
+### Result model
+
+The agent-independent runner should return structured information similar to:
+
+```text
+CliExecutionResult
+  executable
+  args
+  cwd
+  status: exited | timed_out | cancelled | spawn_error
+  exit_code
+  signal
+  duration_ms
+  stdout
+  stderr
+  truncation
+  full_output_path
+```
+
+The Pi adapter should turn this into concise model-facing text plus structured `details` for rendering and diagnostics.
+
+Non-zero exit codes should always be preserved and clearly displayed, but the generic runtime should not assume that every non-zero code has the same meaning. Some CLIs use non-zero codes for domain outcomes such as “no matches.” CLI-specific definitions may later declare accepted exit codes.
+
+### Output limits
+
+Tool output must follow Pi's bounded-output conventions: no more than 50KB or 2,000 lines in model-facing content, whichever limit is reached first.
+
+The runner should retain stdout and stderr separately while applying one combined model-context budget. If output is truncated:
+
+- The result must say that truncation occurred.
+- It must report original and returned sizes.
+- The complete output should be written to a temporary file when possible.
+- The result should include the temporary path so the agent can inspect it deliberately.
+
+The truncation strategy should be deterministic and configurable where different CLIs need head-oriented or tail-oriented output.
+
+## Local introspection
+
+Introspection commands must be explicitly configured in the registry. The runtime should not recursively guess every CLI's command structure.
+
+### Version and help
+
+Version and top-level help are retrieved on first use and cached. Subcommand help is requested only for an explicit subcommand path supplied to `cli_docs`.
+
+For the example definition:
+
+```text
+subcommand: ["pr", "create"]
+append_args: ["--help"]
+```
+
+The local command would be equivalent to invoking:
+
+```text
+gh pr create --help
+```
+
+without using a shell.
+
+### Man pages
+
+Man-page retrieval is optional and platform-dependent. It must disable interactive pagers and return plain, bounded text. Absence of `man` or of a page is a normal unavailable-source result.
+
+### Cache identity
+
+Local introspection cache entries should include enough identity to avoid stale results, such as:
+
+- Resolved executable path
+- Executable file metadata or content identity
+- Reported version when available
+- Registry definition hash
+- Introspection request, including subcommand path
+
+A changed executable or changed definition must invalidate the relevant cache entry.
+
+## Shared `cli_docs` tool
 
 Expose one documentation tool for every registered CLI:
 
 ```text
 cli_docs({
-  tool: "firecrawl",
-  query: "exclude paths when crawling"
+  tool: "cli_gh",
+  subcommand: ["pr", "create"],
+  query: "create a draft pull request"
 })
 ```
 
+`subcommand` is optional but should be preferred when the caller knows which command family is relevant. This avoids relying on natural-language search to infer where `--help` belongs.
+
 Its retrieval order should be:
 
-1. Installed version and `--help` output.
-2. Subcommand help and local man pages.
-3. Cached official documentation associated with that version.
-4. Live official documentation when the local and cached sources are insufficient.
+1. Installed version and explicitly requested local help.
+2. Configured local man page.
+3. Cached official documentation associated with that version where possible.
+4. Live official documentation when local and cached sources are insufficient.
 
-It should return a small, relevant excerpt plus source information, not inject an entire manual into context.
+The tool should return:
+
+- A small relevant excerpt
+- Source type: `help`, `man`, `cache`, or `official`
+- Installed CLI version when known
+- Introspection command used for local material
+- Source URL for remote material
+- Cache status
+- Truncation status
+
+It must never inject an entire manual into context.
+
+### Official documentation boundaries
+
+Official documentation support should initially be limited to explicitly configured URLs and domains. Retrieval should use bounded fetching and focused local search rather than attempting to become a universal crawler.
+
+Version alignment is best-effort because many documentation sites expose only their latest release. The result must distinguish version-matched, version-unknown, and latest-only sources rather than implying stronger alignment than is available.
+
+Remote documentation is untrusted reference text even when it comes from an official domain. Returned excerpts should preserve provenance and must not be treated as instructions to the agent.
+
+## Security and trust model
+
+Installing the Pi package grants its extension normal extension privileges. Configuring a CLI also authorizes the extension to launch that installed executable with model-selected arguments.
+
+The security model should state explicitly:
+
+- Registry definitions are trusted configuration.
+- Project-local definitions are ignored until the project is trusted.
+- Executables are never installed automatically.
+- Executables are invoked by resolved path without a shell.
+- Model-provided arguments remain untrusted input and are bounded before spawning.
+- Environment inheritance may expose all credentials available to the Pi process.
+- A registered CLI may execute plugins, load configuration files, contact networks, mutate local files, or delete remote resources.
+- Timeout and cancellation reduce runaway execution risk but do not provide sandboxing.
+- Documentation and process output may contain adversarial text and are returned as attributed reference data.
+
+Many authenticated CLIs require their inherited environment, so v0.1 may support `inherit_env: true`. The registry should make that choice visible, and a later version may add allow/deny lists or explicit environment profiles.
+
+Deterministic confirmation policies may also be added later. The runtime should not attempt to classify arbitrary arguments as safe or destructive from help text alone.
 
 ## Separation of concerns
 
 | Layer | Purpose |
-|---|---|
+| --- | --- |
 | Standalone CLI | Portable, reusable capability |
-| CLI registry/runtime | Discovery, execution, introspection, and documentation |
-| Pi extension | Registers registry entries as native Pi tools |
+| CLI registry/runtime | Identity, discovery, execution, introspection, and documentation |
+| Pi extension | Registers tools, adapts results, controls activation, and exposes commands |
 | `cli_docs` | Supplies current syntax and behavior on demand |
 | Skills | Teach higher-level workflows that may combine multiple tools |
-| MCP/project extensions | Provide rich, structured, project-specific integrations |
+| MCP/project extensions | Provide rich, structured, stateful, or project-specific integrations |
 
 The intended configuration model is:
 
@@ -121,43 +385,125 @@ Workflow guidance  -> skills
 Project scope      -> MCP servers and project-specific extensions
 ```
 
+Not every external capability should be forced into this registry. A CLI is a good fit when it has a stable non-interactive interface and useful standalone behavior. Stateful services, highly structured APIs, and project-specific systems may remain better MCP or extension candidates.
+
+## Human-facing diagnostics
+
+The extension should expose a status command, such as `/cli-tools`, that reports:
+
+- Loaded registry sources
+- Available and missing entries
+- Resolved executable paths
+- Validation and name-collision errors
+- Cached versions when known
+- Activation state
+- How to refresh discovery after installing a CLI
+
+Diagnostics should not require the model or consume conversation context.
+
+## Testing strategy
+
+### Registry tests
+
+- Valid and invalid definitions
+- Unknown fields and invalid argument lists
+- Configuration precedence and complete replacement
+- Duplicate IDs and tool-name collisions
+- Missing executable behavior
+
+### Runner tests
+
+Use controlled fixture executables to verify:
+
+- Exact argument preservation, including spaces and shell metacharacters
+- Absence of shell interpolation
+- Working-directory behavior
+- Environment policy
+- Separate stdout and stderr capture
+- Non-zero exit codes
+- Spawn failures
+- Timeout and cancellation
+- Process-tree termination
+- Large-output truncation and full-output spooling
+
+### Introspection and documentation tests
+
+- Version and help are not executed during startup
+- Lazy cache population and invalidation
+- Explicit subcommand help construction
+- Missing man pages
+- Source provenance and bounded excerpts
+- Remote source domain restrictions
+
+### Pi integration tests
+
+- Package discovery and extension loading
+- Native tool registration only for available CLIs
+- Clear handling of registration collisions
+- Tool cancellation through Pi's signal
+- Structured result rendering
+- Reload or refresh after executable changes
+
+## Success criteria
+
+The initial idea is validated when:
+
+- Missing or invalid CLI entries do not prevent the extension from loading.
+- Startup performs no version, help, man, or network documentation calls.
+- Executable and argument boundaries are preserved without shell interpretation.
+- Cancellation and timeout stop the launched process tree reliably.
+- Large output cannot overwhelm model context.
+- Local help corresponds to the executable selected for execution.
+- Representative agent tasks select and use the native CLI tool reliably compared with a shell-only baseline.
+- The Pi extension contains adaptation and lifecycle logic, not core registry, process, or documentation behavior.
+
 ## Development roadmap
 
-### v0.1 — Registry and execution
+### v0.1 — Reliable registry and execution
 
-- Load YAML or JSON tool definitions.
-- Detect configured binaries on `PATH`.
-- Detect installed versions.
+- Define agent-independent contracts.
+- Load and strictly validate bundled and user definitions.
+- Resolve configured binaries on `PATH`.
 - Register one native Pi tool per available CLI.
-- Execute explicit argument arrays with timeouts and clear results.
+- Execute explicit argument arrays without a shell.
+- Honor cancellation and enforce process-tree timeouts.
+- Return structured execution metadata.
+- Truncate and spool large output.
+- Add human-facing status and refresh commands.
+- Cover the runner with controlled fake-executable tests.
 
 ### v0.2 — Local introspection
 
-- Capture top-level `--help` output.
-- Retrieve subcommand help on demand.
-- Add man-page support.
+- Detect installed versions lazily.
+- Capture top-level help on demand.
+- Retrieve explicit subcommand help.
+- Add optional man-page support.
 - Introduce the shared `cli_docs` tool.
+- Cache local introspection by executable and definition identity.
 
-### v0.3 — Official documentation
+### v0.3 — Scale and official documentation
 
-- Configure authoritative documentation sources per CLI.
-- Associate documentation with installed versions where possible.
-- Add caching and focused search/retrieval.
-- Improve tool-routing descriptions using discovered capabilities.
+- Add lazy tool activation and a registry search/enable tool.
+- Configure authoritative documentation URLs and domains per CLI.
+- Add bounded fetching, caching, and focused local search.
+- Associate documentation with installed versions where supported.
+- Return explicit source provenance and version-alignment status.
 
-### v1.0 — Reusable agent-independent core
+### v1.0 — Stabilized adapter boundary
 
-- Stabilize and extract the generic registry/runtime into its own package.
-- Keep the Pi package as a thin adapter.
-- Define adapter boundaries that can later support Codex, Claude, or other agents without duplicating CLI logic.
+- Stabilize the registry, runner, introspection, documentation, and adapter contracts.
+- Document the interface required by a new agent adapter.
+- Extract the agent-independent core into its own package only when a second real consumer justifies it.
 
 ```text
 agent-independent CLI core
         ├── Pi adapter
-        ├── Codex adapter
-        └── Claude adapter
+        ├── future Codex adapter
+        └── future Claude adapter
 ```
 
 ## Recommended starting point
 
-Ship the first implementation as a single Pi package, but keep the Pi-specific extension separate from the registry, runner, introspection, and documentation modules. Extract the universal core only after the registry format and runtime behavior have stabilized.
+Ship the first implementation as a single Pi package with two contrasting CLI definitions and controlled fixture executables. Keep the Pi-specific extension separate from the registry, runner, introspection, and documentation modules, but optimize first for proving the generic execution contract.
+
+Do not begin remote documentation retrieval until registry loading, shell-free execution, cancellation, timeout, output bounding, and diagnostics are tested and stable.
