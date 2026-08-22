@@ -356,11 +356,13 @@ describePosix("registered runner adaptation", () => {
 			args: string[];
 			cwd: string;
 			environment: Record<string, string>;
+			environmentValue: string | null;
 		};
 
 		expect(payload.args).toEqual(literalArgs);
 		expect(payload.cwd).toBe(await realpath(root));
-		expect(payload.environment).toEqual({});
+		expect(payload.environmentValue).toBeNull();
+		expect(Object.keys(payload.environment).filter((name) => name !== "__CF_USER_TEXT_ENCODING")).toEqual([]);
 		expect(details.execution).toMatchObject({
 			status: "exited",
 			exitCode: 0,
