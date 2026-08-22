@@ -161,9 +161,9 @@ The intended precedence is:
 
 The canonical user configuration location can be `~/.pi/agent/cli-tools/`. Project-local configuration, if added, should be derived from Pi's configured project directory name rather than hardcoding `.pi`, and must only be read after the project is trusted.
 
-Definitions are merged by stable `id`. A later definition with the same ID replaces the complete earlier definition rather than performing an ambiguous deep merge. The final schema should also provide an explicit way for a user layer to disable a bundled definition.
+Definitions are merged by stable `id`. A later definition with the same ID replaces the complete earlier definition rather than performing an ambiguous deep merge. A user layer disables a bundled definition with a strict tombstone containing only its ID and `disabled: true`.
 
-Duplicate IDs within the same layer are errors. Two enabled entries that resolve to the same `tool_name` are also errors.
+Each `.yaml`, `.yml`, or `.json` file contains one definition or tombstone. Duplicate IDs within the same layer are errors. Two enabled entries that resolve to the same `tool_name` are also errors.
 
 ## Extension lifecycle and tool activation
 

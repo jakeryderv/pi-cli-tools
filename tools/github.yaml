@@ -1,0 +1,31 @@
+id: github
+tool_name: cli_gh
+
+binary:
+  candidates: [gh]
+
+routing:
+  description: Work with GitHub repositories, issues, pull requests, releases, and workflows.
+  prefer_for:
+    - querying or modifying GitHub resources
+    - GitHub API requests authenticated through the installed CLI
+  avoid_for:
+    - editing local Git history
+
+introspection:
+  version:
+    args: [--version]
+  help:
+    args: [--help]
+  subcommand_help:
+    append_args: [--help]
+  man: false
+
+docs:
+  official:
+    - https://cli.github.com/manual/
+
+execution:
+  timeout_ms: 120000
+  cwd: session
+  inherit_env: true
