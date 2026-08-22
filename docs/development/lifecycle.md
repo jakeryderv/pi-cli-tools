@@ -71,7 +71,7 @@ Report each applicable check as one of:
 | Fail   | The command ran and found a blocking problem                                    |
 | Skip   | The check was not applicable or could not run; include the reason and follow-up |
 
-Do not claim a build, test, or check passes without fresh command output. Feature changes should also run focused tests that can falsify their acceptance criteria. For Pi lifecycle or native-tool changes, `npm run smoke:pi` must exercise a real `DefaultResourceLoader`/session binding path and a controlled local tool invocation without network or model access; a print-mode notification alone is not sufficient evidence.
+Do not claim a build, test, or check passes without fresh command output. Feature changes should also run focused tests that can falsify their acceptance criteria. For Pi lifecycle or native-tool changes, `npm run smoke:pi` must exercise a real `DefaultResourceLoader`/session binding path and controlled local tool invocations without network or model access; a print-mode notification alone is not sufficient evidence. Registry-expansion evaluations must load the actual bundled definitions and use fixture executables for every bundled candidate so contract execution does not depend on host-installed third-party CLIs, credentials, or third-party CLI network behavior. Dependency installation, audit, and package-install smoke steps may still contact the package registry.
 
 ### Review
 

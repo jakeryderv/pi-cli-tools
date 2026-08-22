@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stringify } from "yaml";
 
-import { loadRegistry } from "../src/registry.js";
-import type { RegistryDefinition, RegistryLayer } from "../src/types.js";
+import { getAcceptedExitCodes, loadRegistry } from "../src/registry.js";
+import type { RegistryDefinition, RegistryLayer, RegistryLoadResult } from "../src/types.js";
 
 describe("loadRegistry", () => {
 	let root: string;
@@ -32,7 +32,22 @@ describe("loadRegistry", () => {
 			{ name: "bundled", kind: "bundled", directory: productionDirectory, required: true },
 		]);
 
-		expect(result.definitions.map(({ definition }) => definition.id)).toEqual(["github"]);
+		expect(result.definitions.map(({ definition }) => definition.id)).toEqual(["github", "ripgrep"]);
+		expect(getAcceptedExitCodes(requireDefinition(result, 0))).toEqual([0]);
+		const ripgrep = requireDefinition(result, 1);
+		expect(ripgrep).toMatchObject({
+			id: "ripgrep",
+			tool_name: "cli_rg",
+			binary: { candidates: ["rg"] },
+			introspection: { version: { args: ["--version"] }, help: { args: ["--help"] }, man: false },
+			execution: {
+				timeout_ms: 120_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1],
+			},
+		});
+		expect(getAcceptedExitCodes(ripgrep)).toEqual([0, 1]);
 		expect(result.issues).toEqual([]);
 	});
 
@@ -51,10 +66,96 @@ describe("loadRegistry", () => {
 		expect(result.issues).toEqual([]);
 	});
 
+	it("defaults an omitted accepted-exit policy to only zero", async () => {
+		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions[0]?.definition.execution.accepted_exit_codes).toBeUndefined();
+		expect(getAcceptedExitCodes(requireDefinition(result))).toEqual([0]);
+	});
+
+	it("accepts portable exit-code boundaries and treats an explicit list as authoritative", async () => {
+		const definition = createDefinition();
+		definition.execution.accepted_exit_codes = [255, 0];
+		await writeYaml(bundledDirectory, "github.yaml", definition);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(getAcceptedExitCodes(requireDefinition(result))).toEqual([255, 0]);
+		expect(result.issues).toEqual([]);
+	});
+
+	it("accepts the bounded maximum of every portable exit code", async () => {
+		const definition = createDefinition();
+		definition.execution.accepted_exit_codes = Array.from({ length: 256 }, (_unused, code) => code);
+		await writeYaml(bundledDirectory, "github.yaml", definition);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(getAcceptedExitCodes(requireDefinition(result))).toEqual(
+			Array.from({ length: 256 }, (_unused, code) => code),
+		);
+		expect(result.issues).toEqual([]);
+	});
+
+	it.each([
+		["empty", []],
+		["duplicate", [0, 0]],
+		["negative zero", [-0]],
+		["negative-zero duplicate", [-0, 0]],
+		["negative", [-1]],
+		["above portable range", [256]],
+		["fractional", [1.5]],
+		["non-finite", [Number.POSITIVE_INFINITY]],
+		["string", ["1"]],
+		["over item bound", Array.from({ length: 257 }, () => 0)],
+	])("rejects the %s accepted-exit policy", async (_name, acceptedExitCodes) => {
+		const definition = createDefinition() as unknown as Record<string, unknown>;
+		const execution = definition.execution as Record<string, unknown>;
+		execution.accepted_exit_codes = acceptedExitCodes;
+		await writeYaml(bundledDirectory, "invalid.yaml", definition);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toEqual([
+			expect.objectContaining({
+				code: "invalid_definition",
+				layer: "bundled",
+				path: join(bundledDirectory, "invalid.yaml"),
+			}),
+		]);
+	});
+
+	it.each([
+		["negative zero", "[-0]"],
+		["negative-zero duplicate", "[-0,0]"],
+	])("rejects %s in a JSON accepted-exit policy", async (_name, encodedPolicy) => {
+		const definition = createDefinition();
+		definition.execution.accepted_exit_codes = [0];
+		const serialized = JSON.stringify(definition);
+		const contents = serialized.replace('"accepted_exit_codes":[0]', `"accepted_exit_codes":${encodedPolicy}`);
+		if (contents === serialized) throw new Error("failed to construct negative-zero JSON fixture");
+		await writeFile(join(bundledDirectory, "invalid.json"), contents, "utf8");
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions).toEqual([]);
+		expect(result.issues).toEqual([
+			expect.objectContaining({
+				code: "invalid_definition",
+				layer: "bundled",
+				path: join(bundledDirectory, "invalid.json"),
+			}),
+		]);
+	});
+
 	it("rejects unknown fields with source provenance", async () => {
+		const definition = createDefinition();
 		await writeYaml(bundledDirectory, "invalid.yaml", {
-			...createDefinition(),
-			unexpected: true,
+			...definition,
+			execution: { ...definition.execution, unexpected: true },
 		});
 
 		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
@@ -70,7 +171,9 @@ describe("loadRegistry", () => {
 	});
 
 	it("replaces a bundled definition with the complete user definition", async () => {
-		await writeYaml(bundledDirectory, "github.yaml", createDefinition());
+		const bundled = createDefinition();
+		bundled.execution.accepted_exit_codes = [0, 1];
+		await writeYaml(bundledDirectory, "github.yaml", bundled);
 		await mkdir(userDirectory);
 		await writeYaml(userDirectory, "github.yaml", createDefinition("github", "custom_gh"));
 
@@ -81,6 +184,30 @@ describe("loadRegistry", () => {
 			definition: { id: "github", tool_name: "custom_gh" },
 			source: { layer: "user", path: join(userDirectory, "github.yaml") },
 		});
+		expect(getAcceptedExitCodes(requireDefinition(result))).toEqual([0]);
+	});
+
+	it("quarantines a bundled definition behind an attributable negative-zero accepted-exit override", async () => {
+		const bundled = createDefinition("ripgrep", "cli_rg");
+		bundled.execution.accepted_exit_codes = [0, 1];
+		await writeYaml(bundledDirectory, "ripgrep.yaml", bundled);
+		await mkdir(userDirectory);
+		const invalidOverride = createDefinition("ripgrep", "custom_rg") as unknown as Record<string, unknown>;
+		(invalidOverride.execution as Record<string, unknown>).accepted_exit_codes = [-0, 0];
+		await writeYaml(userDirectory, "ripgrep.yaml", invalidOverride);
+
+		const result = await loadRegistry(createLayers(bundledDirectory, userDirectory));
+
+		expect(result.definitions[0]?.definition.tool_name).toBe("cli_rg");
+		expect(result.quarantined).toEqual([
+			{
+				id: "ripgrep",
+				layer: "user",
+				paths: [join(userDirectory, "ripgrep.yaml")],
+				reason: "invalid_override",
+			},
+		]);
+		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_definition", layer: "user" })]);
 	});
 
 	it("allows a user tombstone to disable a bundled definition", async () => {
@@ -224,6 +351,12 @@ describe("loadRegistry", () => {
 		expect(result.issues).toEqual([expect.objectContaining({ code: "invalid_url" })]);
 	});
 });
+
+function requireDefinition(result: RegistryLoadResult, index = 0): RegistryDefinition {
+	const loaded = result.definitions[index];
+	if (!loaded) throw new Error(`expected registry definition at index ${String(index)}`);
+	return loaded.definition;
+}
 
 function createLayers(bundledDirectory: string, userDirectory: string): RegistryLayer[] {
 	return [

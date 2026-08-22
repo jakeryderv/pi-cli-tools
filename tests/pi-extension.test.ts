@@ -39,7 +39,17 @@ describePosix("Pi extension lifecycle adaptation", () => {
 	it("discovers from session cwd, registers once, and classifies tool results", async () => {
 		await symlink(process.execPath, join(binDirectory, "fixture-cli"));
 		vi.stubEnv("PATH", "bin");
-		await writeDefinition(createDefinition("github", "cli_gh", { binary: { candidates: ["fixture-cli"] } }));
+		await writeDefinition(
+			createDefinition("github", "cli_gh", {
+				binary: { candidates: ["fixture-cli"] },
+				execution: {
+					timeout_ms: 5_000,
+					cwd: "session",
+					inherit_env: false,
+					accepted_exit_codes: [0, 1],
+				},
+			}),
+		);
 		const harness = createMockPi();
 
 		await cliToolsExtension(harness.api);
@@ -66,23 +76,23 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		});
 		expect(nonzeroPatches).toEqual([{ isError: true }]);
 
-		const zero = await tool.execute(
-			"zero",
-			{ args: [fixturePath, "exit", "0"] },
+		const accepted = await tool.execute(
+			"accepted",
+			{ args: [fixturePath, "exit", "1"] },
 			undefined,
 			undefined,
 			harness.context(root) as unknown as Parameters<typeof tool.execute>[4],
 		);
-		const zeroPatches = await harness.emit("tool_result", {
+		const acceptedPatches = await harness.emit("tool_result", {
 			type: "tool_result",
 			toolName: "cli_gh",
-			details: resultDetails(zero),
+			details: resultDetails(accepted),
 		});
-		expect(zeroPatches).toEqual([undefined]);
+		expect(acceptedPatches).toEqual([undefined]);
 		const mismatchedPatches = await harness.emit("tool_result", {
 			type: "tool_result",
 			toolName: "cli_gh",
-			details: { ...resultDetails(zero), registryId: "another-registry-id" },
+			details: { ...resultDetails(accepted), registryId: "another-registry-id" },
 		});
 		expect(mismatchedPatches).toEqual([undefined]);
 
@@ -94,10 +104,20 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		expect(unrelatedPatches).toEqual([undefined]);
 	});
 
-	it("preserves an earlier middleware error decision for a successful CLI exit", async () => {
+	it("preserves an earlier middleware error decision for an accepted nonzero CLI exit", async () => {
 		await symlink(process.execPath, join(binDirectory, "fixture-cli"));
 		vi.stubEnv("PATH", binDirectory);
-		await writeDefinition(createDefinition("github", "cli_gh", { binary: { candidates: ["fixture-cli"] } }));
+		await writeDefinition(
+			createDefinition("github", "cli_gh", {
+				binary: { candidates: ["fixture-cli"] },
+				execution: {
+					timeout_ms: 5_000,
+					cwd: "session",
+					inherit_env: false,
+					accepted_exit_codes: [0, 1],
+				},
+			}),
+		);
 		const harness = createMockPi();
 		harness.handlers.set("tool_result", [() => ({ isError: true })]);
 		await cliToolsExtension(harness.api);
@@ -105,8 +125,8 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		const tool = harness.tools[0];
 		if (!tool) throw new Error("expected registered tool");
 		const result = await tool.execute(
-			"zero",
-			{ args: [fixturePath, "exit", "0"] },
+			"accepted",
+			{ args: [fixturePath, "exit", "1"] },
 			undefined,
 			undefined,
 			harness.context(root) as unknown as Parameters<typeof tool.execute>[4],
@@ -230,7 +250,9 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		expect(harness.tools).toEqual([]);
 		await runDiagnostics(harness, root);
 		expect(harness.notifications.at(-1)).toMatchObject({ severity: "info" });
-		expect(harness.notifications.at(-1)?.message).toContain("Missing: 1");
+		expect(harness.notifications.at(-1)?.message).toContain("Missing: 2");
+		expect(harness.notifications.at(-1)?.message).toContain("cli_gh (github)");
+		expect(harness.notifications.at(-1)?.message).toContain("cli_rg (ripgrep)");
 		expect(harness.notifications.at(-1)?.message).toContain("Run /reload after installing");
 	});
 

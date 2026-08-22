@@ -5,6 +5,7 @@ import Value from "typebox/value";
 import { isMap, isScalar, parseDocument, type Document } from "yaml";
 
 import {
+	AcceptedExitCodesSchema,
 	DisabledRegistryEntrySchema,
 	RegistryDefinitionSchema,
 	RegistryIdSchema,
@@ -25,6 +26,25 @@ const REGISTRY_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
 const MAX_REGISTRY_FILE_BYTES = 256 * 1024;
 const MAX_REGISTRY_FILES_PER_LAYER = 256;
 const MAX_SCHEMA_ERRORS = 8;
+
+export const DEFAULT_ACCEPTED_EXIT_CODES = Object.freeze([0] as const);
+
+/** Resolve the authoritative definition policy without mutating parsed registry data. */
+export function getAcceptedExitCodes(definition: RegistryDefinition): readonly number[] {
+	return definition.execution.accepted_exit_codes ?? DEFAULT_ACCEPTED_EXIT_CODES;
+}
+
+/** Validate a canonical accepted-exit policy for registry data and serialized result details. */
+export function isAcceptedExitCodes(value: unknown): value is number[] {
+	if (!Value.Check(AcceptedExitCodesSchema, value)) return false;
+	const seen = new Set<number>();
+	for (const code of value) {
+		// JSON serializes -0 as 0, so accepting it would make detail round-trips lossy.
+		if (Object.is(code, -0) || seen.has(code)) return false;
+		seen.add(code);
+	}
+	return true;
+}
 
 interface ParsedEntry {
 	entry: RegistryEntry;
@@ -273,6 +293,16 @@ function validateDefinition(
 	layer: RegistryLayer,
 	path: string,
 ): RegistryIssue | undefined {
+	const acceptedExitCodes = definition.execution.accepted_exit_codes;
+	if (acceptedExitCodes && !isAcceptedExitCodes(acceptedExitCodes)) {
+		return createFileIssue(
+			"invalid_definition",
+			layer,
+			path,
+			"Accepted exit codes must use canonical non-negative integer representations without duplicates",
+		);
+	}
+
 	if (definition.binary.candidates.some((candidate) => candidate === "." || candidate === "..")) {
 		return createFileIssue("invalid_definition", layer, path, "Binary candidates cannot be '.' or '..'");
 	}

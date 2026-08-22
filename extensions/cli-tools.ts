@@ -11,7 +11,7 @@ import {
 	isCliToolResultDetails,
 	isCliToolResultError,
 } from "./pi-adapter.js";
-import { loadRegistry } from "../src/registry.js";
+import { getAcceptedExitCodes, loadRegistry } from "../src/registry.js";
 
 /** Load the registry during factory setup, then adapt eligible CLIs after Pi binds its runtime. */
 export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void> {
@@ -42,8 +42,9 @@ export default async function cliToolsExtension(pi: ExtensionAPI): Promise<void>
 			({ discovery }) => discovery.registry.definition.tool_name === event.toolName,
 		);
 		if (!registered || !isCliToolResultDetails(event.details)) return;
-		if (event.details.registryId !== registered.discovery.registry.definition.id) return;
-		if (isCliToolResultError(event.details)) return { isError: true };
+		const { definition } = registered.discovery.registry;
+		if (event.details.registryId !== definition.id) return;
+		if (isCliToolResultError(event.details, getAcceptedExitCodes(definition))) return { isError: true };
 		return;
 	});
 

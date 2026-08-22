@@ -15,6 +15,7 @@ import {
 	createToolDescription,
 	formatCliExecutionForModel,
 	formatCliToolsDiagnostics,
+	isCliToolResultDetails,
 	isCliToolResultError,
 	mapCliExecutionRequest,
 	PI_DIAGNOSTIC_MAX_BYTES,
@@ -129,7 +130,12 @@ describe("native CLI tool contract", () => {
 
 	it("maps only trusted discovery, registry policy, and the current session cwd", () => {
 		const definition = createDefinition("mapped", "cli_mapped", {
-			execution: { timeout_ms: 12_345, cwd: "session", inherit_env: true },
+			execution: {
+				timeout_ms: 12_345,
+				cwd: "session",
+				inherit_env: true,
+				accepted_exit_codes: [0, 7],
+			},
 		});
 		const discovery = createAvailableDiscovery("/resolved/exact-cli", definition);
 		const args = ["", "a b", "*", "$()", ";"];
@@ -167,7 +173,14 @@ describePosix("registration planning and discovery", () => {
 	it("registers only available, non-colliding, non-quarantined definitions", async () => {
 		const definitions = [
 			createDefinition("available", "cli_available"),
-			createDefinition("available-two", "cli_available_two"),
+			createDefinition("available-two", "cli_available_two", {
+				execution: {
+					timeout_ms: 12_000,
+					cwd: "session",
+					inherit_env: true,
+					accepted_exit_codes: [0, 1],
+				},
+			}),
 			createDefinition("missing", "cli_missing"),
 			createDefinition("colliding", "cli_collision"),
 			createDefinition("quarantined", "cli_quarantined"),
@@ -196,8 +209,14 @@ describePosix("registration planning and discovery", () => {
 		});
 		expect(state.collisions[0]?.owner.source).toBe("sdk");
 		expect(state.registered[0]?.activeAtRegistration).toBe(true);
-		expect(formatCliToolsDiagnostics(state, [...harness.activeNames])).toContain("Quarantined:");
-		expect(formatCliToolsDiagnostics(state, [...harness.activeNames])).not.toContain("inactive or filtered by Pi");
+		const diagnostics = formatCliToolsDiagnostics(state, [...harness.activeNames]);
+		expect(diagnostics).toContain("Quarantined:");
+		expect(diagnostics).toContain("cli_available (available)");
+		expect(diagnostics).toContain("timeout=5000ms; cwd=session; env=empty");
+		expect(diagnostics).toContain("timeout=12000ms; cwd=session; env=inherit; accepted exit codes: 0, 1");
+		const defaultPolicyLine = diagnostics.split("\n").find((line) => line.includes("cli_available (available)"));
+		expect(defaultPolicyLine).not.toContain("accepted exit codes");
+		expect(diagnostics).not.toContain("inactive or filtered by Pi");
 	});
 
 	it("keeps Pi-filtered registrations visible as inactive", async () => {
@@ -207,7 +226,7 @@ describePosix("registration planning and discovery", () => {
 
 		expect(harness.tools).toHaveLength(1);
 		expect(state.registered[0]?.activeAtRegistration).toBe(false);
-		expect(formatCliToolsDiagnostics(state, [])).toContain("[inactive or filtered by Pi]");
+		expect(formatCliToolsDiagnostics(state, [])).toContain("[inactive or filtered by Pi;");
 	});
 
 	it("does not register callable tools on unsupported platforms", async () => {
@@ -256,6 +275,12 @@ describe("bounded human diagnostics", () => {
 						(_unused, candidateIndex) => `candidate-${String(index)}-${String(candidateIndex)}-${"x".repeat(200)}`,
 					),
 				},
+				execution: {
+					timeout_ms: 600_000,
+					cwd: "session",
+					inherit_env: false,
+					accepted_exit_codes: Array.from({ length: 256 }, (_unused, code) => code),
+				},
 			}),
 		);
 		const registry = createRegistry(definitions, {
@@ -290,6 +315,7 @@ describe("bounded human diagnostics", () => {
 		expect(diagnostics).toContain("Sources:");
 		expect(diagnostics).toContain("user:");
 		expect(diagnostics).toContain("… 24 more");
+		expect(diagnostics).toContain("accepted exit codes: 0, 1, 2, 3, 4, 5, 6, 7, … 248 more");
 		expect(diagnostics).toContain("[Diagnostics truncated to the pi-cli-tools notification limit.]");
 		expect(Buffer.byteLength(diagnostics, "utf8")).toBeLessThanOrEqual(PI_DIAGNOSTIC_MAX_BYTES);
 		expect(countLogicalLines(diagnostics)).toBeLessThanOrEqual(PI_DIAGNOSTIC_MAX_LINES);
@@ -458,7 +484,15 @@ describePosix("registered runner adaptation", () => {
 		["nonzero", [fixturePath, "exit", "17"], "exited", 17],
 		["signal", [fixturePath, "signal", "SIGTERM"], "exited", null],
 	] as const)("preserves the %s result status and exit metadata", async (_name, args, status, exitCode) => {
-		const tool = createNativeCliTool(createAvailableDiscovery(process.execPath));
+		const definition = createDefinition("matrix", "cli_matrix", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1, 2],
+			},
+		});
+		const tool = createNativeCliTool(createAvailableDiscovery(process.execPath, definition));
 		const result = await tool.execute("matrix", { args: [...args] }, undefined, undefined, asContext(root));
 		const details = resultDetails(result);
 		if (details.kind !== "execution") throw new Error("expected execution details");
@@ -472,10 +506,145 @@ describePosix("registered runner adaptation", () => {
 		expect(isCliToolResultError(details)).toBe(_name !== "zero");
 	});
 
+	it("accepts configured nonzero exits without rewriting runner status or exit code", async () => {
+		const definition = createDefinition("accepted", "cli_accepted", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1],
+			},
+		});
+		const tool = createNativeCliTool(createAvailableDiscovery(process.execPath, definition));
+		const result = await tool.execute(
+			"accepted",
+			{ args: [fixturePath, "exit", "1"] },
+			undefined,
+			undefined,
+			asContext(root),
+		);
+		const details = resultDetails(result);
+		if (details.kind !== "execution") throw new Error("expected execution details");
+
+		expect(details.acceptedExitCodes).toEqual([0, 1]);
+		expect(details.execution).toMatchObject({ status: "exited", exitCode: 1, signal: null });
+		expect(isCliToolResultError(details)).toBe(false);
+		expect(resultText(result)).toContain("Status: exited; code=1; accepted=true");
+
+		const roundTripped: unknown = JSON.parse(JSON.stringify(details));
+		expect(isCliToolResultDetails(roundTripped)).toBe(true);
+		expect(isCliToolResultError(roundTripped as CliToolResultDetails)).toBe(false);
+
+		const renderResult = tool.renderResult;
+		if (!renderResult) throw new Error("expected result renderer");
+		const theme = {
+			fg(_color: unknown, text: string) {
+				return text;
+			},
+		} as unknown as Theme;
+		expect(
+			renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false } as Parameters<
+				typeof renderResult
+			>[3])
+				.render(500)
+				.join("\n"),
+		).toContain("exit 1 (accepted)");
+
+		const statefulTheme = {
+			fg(color: string, text: string) {
+				return `[${color}]${text}`;
+			},
+		} as unknown as Theme;
+		const markedError = renderResult(result, { expanded: false, isPartial: false }, statefulTheme, {
+			isError: true,
+		} as Parameters<typeof renderResult>[3])
+			.render(500)
+			.join("\n");
+		expect(markedError).toContain("[error]exit 1 (accepted policy; marked error)");
+	});
+
+	it("rejects unaccepted exits, preserves explicit policy authority, and defaults legacy details to zero", async () => {
+		const acceptedDefinition = createDefinition("accepted", "cli_accepted", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1],
+			},
+		});
+		const acceptedTool = createNativeCliTool(createAvailableDiscovery(process.execPath, acceptedDefinition));
+		const unacceptedResult = await acceptedTool.execute(
+			"unaccepted",
+			{ args: [fixturePath, "exit", "2"] },
+			undefined,
+			undefined,
+			asContext(root),
+		);
+		const unacceptedDetails = resultDetails(unacceptedResult);
+		expect(isCliToolResultError(unacceptedDetails)).toBe(true);
+		expect(resultText(unacceptedResult)).toContain("code=2; accepted=false");
+
+		const defaultTool = createNativeCliTool(createAvailableDiscovery(process.execPath));
+		const defaultResult = await defaultTool.execute(
+			"default",
+			{ args: [fixturePath, "exit", "1"] },
+			undefined,
+			undefined,
+			asContext(root),
+		);
+		const defaultDetails = resultDetails(defaultResult);
+		if (defaultDetails.kind !== "execution") throw new Error("expected execution details");
+		expect(defaultDetails.acceptedExitCodes).toEqual([0]);
+		expect(isCliToolResultError(defaultDetails)).toBe(true);
+		const { acceptedExitCodes: _acceptedExitCodes, ...legacyDetails } = defaultDetails;
+		void _acceptedExitCodes;
+		expect(isCliToolResultDetails(legacyDetails)).toBe(true);
+		expect(isCliToolResultError(legacyDetails)).toBe(true);
+
+		const oneOnly = createDefinition("one-only", "cli_one_only", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [1],
+			},
+		});
+		const zeroResult = await createNativeCliTool(createAvailableDiscovery(process.execPath, oneOnly)).execute(
+			"zero-unaccepted",
+			{ args: [fixturePath, "exit", "0"] },
+			undefined,
+			undefined,
+			asContext(root),
+		);
+		expect(isCliToolResultError(resultDetails(zeroResult))).toBe(true);
+	});
+
+	it("rejects malformed serialized accepted-exit snapshots", () => {
+		for (const acceptedExitCodes of [[], [0, 0], [-0], [-0, 0], [-1], [256], [1.5], ["1"]]) {
+			expect(
+				isCliToolResultDetails({
+					adapter: "pi-cli-tools",
+					kind: "execution",
+					registryId: "fixture",
+					acceptedExitCodes,
+					execution: { status: "exited" },
+				}),
+			).toBe(false);
+		}
+	});
+
 	it("passes Pi's AbortSignal through and reports confirmed cancellation cleanup", async () => {
 		const readyPath = join(root, "ready.json");
 		const controller = new AbortController();
-		const tool = createNativeCliTool(createAvailableDiscovery(process.execPath));
+		const definition = createDefinition("cancel", "cli_cancel", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1, 2, 255],
+			},
+		});
+		const tool = createNativeCliTool(createAvailableDiscovery(process.execPath, definition));
 		const pending = tool.execute(
 			"cancel",
 			{ args: [fixturePath, "tree", readyPath, "ignore"] },
@@ -516,7 +685,12 @@ describePosix("registered runner adaptation", () => {
 
 	it("preserves timeout, spawn-error, and request-validation outcomes", async () => {
 		const timeoutDefinition = createDefinition("timeout", "cli_timeout", {
-			execution: { timeout_ms: 100, cwd: "session", inherit_env: false },
+			execution: {
+				timeout_ms: 100,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1, 2, 255],
+			},
 		});
 		const timeoutTool = createNativeCliTool(createAvailableDiscovery(process.execPath, timeoutDefinition));
 		const timeoutResult = await timeoutTool.execute(
@@ -530,14 +704,30 @@ describePosix("registered runner adaptation", () => {
 		expect(timeoutDetails.kind === "execution" && timeoutDetails.execution.status).toBe("timed_out");
 		expect(isCliToolResultError(timeoutDetails)).toBe(true);
 
-		const spawnTool = createNativeCliTool(createAvailableDiscovery(join(root, "removed-executable")));
+		const spawnDefinition = createDefinition("spawn", "cli_spawn", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1, 2, 255],
+			},
+		});
+		const spawnTool = createNativeCliTool(createAvailableDiscovery(join(root, "removed-executable"), spawnDefinition));
 		const spawnResult = await spawnTool.execute("spawn", { args: [] }, undefined, undefined, asContext(root));
 		const spawnDetails = resultDetails(spawnResult);
 		expect(spawnDetails.kind === "execution" && spawnDetails.execution.status).toBe("spawn_error");
 		expect(isCliToolResultError(spawnDetails)).toBe(true);
 		expect(resultText(spawnResult)).toContain("configured executable");
 
-		const requestTool = createNativeCliTool(createAvailableDiscovery(process.execPath));
+		const requestDefinition = createDefinition("request", "cli_request", {
+			execution: {
+				timeout_ms: 5_000,
+				cwd: "session",
+				inherit_env: false,
+				accepted_exit_codes: [0, 1, 2, 255],
+			},
+		});
+		const requestTool = createNativeCliTool(createAvailableDiscovery(process.execPath, requestDefinition));
 		const marker = join(root, "mutated-marker");
 		const requestResult = await requestTool.execute(
 			"request",
