@@ -5,6 +5,10 @@ import {
 	CLI_MAX_ACCEPTED_EXIT_CODES,
 	CLI_MAX_ARGUMENT_BYTES,
 	CLI_MAX_ARGUMENT_COUNT,
+	CLI_DOCS_MAX_SUBCOMMAND_SEGMENT_BYTES,
+	CLI_DOCS_MAX_SUBCOMMAND_SEGMENTS,
+	CLI_INTROSPECTION_MAX_TIMEOUT_MS,
+	CLI_INTROSPECTION_SUBCOMMAND_APPEND_MAX_ARGUMENTS,
 	CLI_MAX_PROCESS_EXIT_CODE,
 	CLI_MAX_TIMEOUT_MS,
 	CLI_MIN_TIMEOUT_MS,
@@ -23,9 +27,28 @@ const ToolNameSchema = Type.String({
 });
 
 const ArgumentSchema = Type.String({ minLength: 1, maxLength: CLI_MAX_ARGUMENT_BYTES });
-const ArgumentListSchema = Type.Array(ArgumentSchema, {
+const IntrospectionArgumentListSchema = Type.Array(ArgumentSchema, {
+	minItems: 1,
 	maxItems: CLI_MAX_ARGUMENT_COUNT,
 });
+
+const BinaryCandidatesSchema = Type.Object(
+	{
+		candidates: Type.Array(
+			Type.String({
+				minLength: 1,
+				maxLength: 255,
+				pattern: "^[^/\\\\\\u0000]+$",
+			}),
+			{
+				minItems: 1,
+				maxItems: 32,
+				uniqueItems: true,
+			},
+		),
+	},
+	{ additionalProperties: false },
+);
 
 const RoutingListSchema = Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
 	maxItems: 32,
@@ -40,7 +63,41 @@ export const AcceptedExitCodesSchema = Type.Array(Type.Integer({ minimum: 0, max
 
 const IntrospectionCommandSchema = Type.Object(
 	{
-		args: ArgumentListSchema,
+		args: IntrospectionArgumentListSchema,
+		accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
+		timeout_ms: Type.Optional(Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_INTROSPECTION_MAX_TIMEOUT_MS })),
+	},
+	{ additionalProperties: false },
+);
+
+const SubcommandPathSchema = Type.Array(
+	Type.String({
+		minLength: 1,
+		maxLength: CLI_DOCS_MAX_SUBCOMMAND_SEGMENT_BYTES,
+		pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+	}),
+	{ minItems: 1, maxItems: CLI_DOCS_MAX_SUBCOMMAND_SEGMENTS },
+);
+
+const SubcommandHelpCommandSchema = Type.Object(
+	{
+		allowed_paths: Type.Array(SubcommandPathSchema, { minItems: 1, maxItems: 256 }),
+		append_args: Type.Array(ArgumentSchema, {
+			minItems: 1,
+			maxItems: CLI_INTROSPECTION_SUBCOMMAND_APPEND_MAX_ARGUMENTS,
+		}),
+		accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
+		timeout_ms: Type.Optional(Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_INTROSPECTION_MAX_TIMEOUT_MS })),
+	},
+	{ additionalProperties: false },
+);
+
+const ManCommandSchema = Type.Object(
+	{
+		binary: BinaryCandidatesSchema,
+		args: IntrospectionArgumentListSchema,
+		accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
+		timeout_ms: Type.Optional(Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_INTROSPECTION_MAX_TIMEOUT_MS })),
 	},
 	{ additionalProperties: false },
 );
@@ -50,23 +107,7 @@ export const RegistryDefinitionSchema = Type.Object(
 	{
 		id: RegistryIdSchema,
 		tool_name: ToolNameSchema,
-		binary: Type.Object(
-			{
-				candidates: Type.Array(
-					Type.String({
-						minLength: 1,
-						maxLength: 255,
-						pattern: "^[^/\\\\\\u0000]+$",
-					}),
-					{
-						minItems: 1,
-						maxItems: 32,
-						uniqueItems: true,
-					},
-				),
-			},
-			{ additionalProperties: false },
-		),
+		binary: BinaryCandidatesSchema,
 		routing: Type.Object(
 			{
 				description: Type.String({ minLength: 1, maxLength: 2048 }),
@@ -79,15 +120,8 @@ export const RegistryDefinitionSchema = Type.Object(
 			{
 				version: Type.Optional(IntrospectionCommandSchema),
 				help: Type.Optional(IntrospectionCommandSchema),
-				subcommand_help: Type.Optional(
-					Type.Object(
-						{
-							append_args: ArgumentListSchema,
-						},
-						{ additionalProperties: false },
-					),
-				),
-				man: Type.Boolean(),
+				subcommand_help: Type.Optional(SubcommandHelpCommandSchema),
+				man: Type.Union([Type.Literal(false), ManCommandSchema]),
 			},
 			{ additionalProperties: false },
 		),
@@ -385,3 +419,101 @@ export type CliExecutionResult =
 			readonly termination: null;
 			readonly processGroupCleanup: null;
 	  });
+
+export type LocalIntrospectionSource = "version" | "help" | "subcommand_help" | "man";
+export type LocalIntrospectionCacheStatus = "hit" | "miss";
+
+/** Stable, serializable identity for an executable observed immediately around introspection. */
+export interface ExecutableIdentity {
+	readonly realpath: string;
+	readonly dev: string;
+	readonly ino: string;
+	readonly mode: string;
+	readonly size: string;
+	readonly mtimeNs: string;
+	readonly ctimeNs: string;
+}
+
+export interface LocalIntrospectionCommand {
+	readonly executablePath: string;
+	readonly args: readonly string[];
+	readonly cwd: string;
+	readonly timeoutMs: number;
+}
+
+export interface LocalIntrospectionExecutionMetadata {
+	readonly exitCode: number | null;
+	readonly signal: NodeJS.Signals | null;
+	readonly durationMs: number;
+	readonly capture: CliCaptureMetadata;
+	readonly cleanup: CliProcessGroupCleanup | CliTermination | null;
+	readonly error: CliErrorDetails | null;
+}
+
+export interface LocalIntrospectionSuccess {
+	readonly status: "ok";
+	readonly source: LocalIntrospectionSource;
+	readonly command: LocalIntrospectionCommand;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly exitCode: number;
+	readonly durationMs: number;
+	readonly truncated: boolean;
+	readonly cache: LocalIntrospectionCacheStatus;
+	readonly execution: LocalIntrospectionExecutionMetadata;
+}
+
+export type LocalIntrospectionUnavailableCode = "not_configured" | "helper_missing" | "executable_unavailable";
+
+export interface LocalIntrospectionUnavailable {
+	readonly status: "unavailable";
+	readonly source: LocalIntrospectionSource;
+	readonly code: LocalIntrospectionUnavailableCode;
+	readonly command?: LocalIntrospectionCommand;
+}
+
+export type LocalIntrospectionFailureCode =
+	| "invalid_request"
+	| "spawn_error"
+	| "unaccepted_exit"
+	| "signal_exit"
+	| "timed_out"
+	| "cancelled"
+	| "capture_incomplete"
+	| "cleanup_incomplete"
+	| "identity_changed"
+	| "concurrency_limit";
+
+export interface LocalIntrospectionFailure {
+	readonly status: "failed";
+	readonly source: LocalIntrospectionSource;
+	readonly code: LocalIntrospectionFailureCode;
+	readonly command?: LocalIntrospectionCommand;
+	readonly exitCode?: number | null;
+	readonly signal?: NodeJS.Signals | null;
+	readonly durationMs?: number;
+	readonly error?: CliErrorDetails;
+	readonly execution?: LocalIntrospectionExecutionMetadata;
+}
+
+export type LocalIntrospectionOutcome =
+	LocalIntrospectionSuccess | LocalIntrospectionUnavailable | LocalIntrospectionFailure;
+
+export interface CliDocsRequest {
+	readonly discovery: Extract<CliDiscovery, { status: "available" }>;
+	readonly cwd: string;
+	readonly subcommand?: readonly string[];
+	readonly signal?: AbortSignal;
+}
+
+export interface CliDocsResult {
+	readonly status: "ok" | "failed";
+	readonly registryId: string;
+	readonly toolName: string;
+	readonly requestedSubcommand: readonly string[];
+	readonly version: LocalIntrospectionOutcome;
+	readonly documentation: LocalIntrospectionOutcome;
+	readonly attempts: readonly LocalIntrospectionOutcome[];
+	readonly definitionSha256: string;
+	readonly executableIdentitySha256: string | null;
+}

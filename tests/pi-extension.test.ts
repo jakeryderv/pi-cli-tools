@@ -42,6 +42,11 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		await writeDefinition(
 			createDefinition("github", "cli_gh", {
 				binary: { candidates: ["fixture-cli"] },
+				introspection: {
+					version: { args: [fixturePath, "streams", Buffer.from("version").toString("base64")] },
+					help: { args: [fixturePath, "streams", Buffer.from("help").toString("base64")] },
+					man: false,
+				},
 				execution: {
 					timeout_ms: 5_000,
 					cwd: "session",
@@ -58,7 +63,7 @@ describePosix("Pi extension lifecycle adaptation", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, harness.context(root));
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_gh"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_gh", "cli_docs"]);
 		const tool = harness.tools[0];
 		if (!tool) throw new Error("expected registered tool");
 		const nonzero = await tool.execute(
@@ -102,6 +107,40 @@ describePosix("Pi extension lifecycle adaptation", () => {
 			details: nonzeroDetails,
 		});
 		expect(unrelatedPatches).toEqual([undefined]);
+
+		const docs = harness.tools.find(({ name }) => name === "cli_docs");
+		if (!docs) throw new Error("expected cli_docs");
+		const docsFailure = await docs.execute(
+			"docs-failure",
+			{ tool: "cli_gh", subcommand: ["pr"] },
+			undefined,
+			undefined,
+			harness.context(root) as unknown as Parameters<typeof docs.execute>[4],
+		);
+		expect(docsFailure.details).toMatchObject({
+			kind: "docs",
+			status: "failed",
+			documentation: { status: "unavailable", code: "not_configured" },
+		});
+		const docsPatches = await harness.emit("tool_result", {
+			type: "tool_result",
+			toolName: "cli_docs",
+			details: docsFailure.details,
+		});
+		expect(docsPatches).toEqual([{ isError: true }]);
+		const docsSuccess = await docs.execute(
+			"docs-success",
+			{ tool: "cli_gh" },
+			undefined,
+			undefined,
+			harness.context(root) as unknown as Parameters<typeof docs.execute>[4],
+		);
+		const successfulDocsPatches = await harness.emit("tool_result", {
+			type: "tool_result",
+			toolName: "cli_docs",
+			details: docsSuccess.details,
+		});
+		expect(successfulDocsPatches).toEqual([undefined]);
 	});
 
 	it("preserves an earlier middleware error decision for an accepted nonzero CLI exit", async () => {

@@ -27,12 +27,22 @@ export class CombinedOutputCollector {
 	readonly #stdout: StreamTextCollector;
 	readonly #stderr: StreamTextCollector;
 	readonly #strategy: CliOutputStrategy;
+	readonly #maxBytes: number;
+	readonly #maxLines: number;
 	#finished: OutputProjection | null = null;
 
-	constructor(strategy: CliOutputStrategy) {
+	constructor(
+		strategy: CliOutputStrategy,
+		limits: { readonly maxBytes: number; readonly maxLines: number } = {
+			maxBytes: CLI_MAX_RETURNED_OUTPUT_BYTES,
+			maxLines: CLI_MAX_RETURNED_OUTPUT_LINES,
+		},
+	) {
 		this.#strategy = strategy;
-		this.#stdout = new StreamTextCollector(strategy);
-		this.#stderr = new StreamTextCollector(strategy);
+		this.#maxBytes = limits.maxBytes;
+		this.#maxLines = limits.maxLines;
+		this.#stdout = new StreamTextCollector(strategy, limits.maxBytes, limits.maxLines);
+		this.#stderr = new StreamTextCollector(strategy, limits.maxBytes, limits.maxLines);
 	}
 
 	add(stream: "stdout" | "stderr", chunk: Buffer): boolean {
@@ -42,7 +52,7 @@ export class CombinedOutputCollector {
 
 	get truncated(): boolean {
 		const original = addExtents(this.#stdout.originalExtent, this.#stderr.originalExtent);
-		return original.bytes > CLI_MAX_RETURNED_OUTPUT_BYTES || original.lines > CLI_MAX_RETURNED_OUTPUT_LINES;
+		return original.bytes > this.#maxBytes || original.lines > this.#maxLines;
 	}
 
 	finish(): OutputProjection {
@@ -50,8 +60,8 @@ export class CombinedOutputCollector {
 		this.#stdout.end();
 		this.#stderr.end();
 
-		let remainingBytes = CLI_MAX_RETURNED_OUTPUT_BYTES;
-		let remainingLines = CLI_MAX_RETURNED_OUTPUT_LINES;
+		let remainingBytes = this.#maxBytes;
+		let remainingLines = this.#maxLines;
 		const projections = new Map<"stdout" | "stderr", StreamProjection>();
 		const order: readonly ("stdout" | "stderr")[] =
 			this.#strategy === "head" ? ["stdout", "stderr"] : ["stderr", "stdout"];
@@ -83,8 +93,8 @@ export class CombinedOutputCollector {
 		const original = addExtents(stdout.stats.original, stderr.stats.original);
 		const returned = addExtents(stdout.stats.returned, stderr.stats.returned);
 		const reasons = {
-			bytes: original.bytes > CLI_MAX_RETURNED_OUTPUT_BYTES,
-			lines: original.lines > CLI_MAX_RETURNED_OUTPUT_LINES,
+			bytes: original.bytes > this.#maxBytes,
+			lines: original.lines > this.#maxLines,
 		};
 
 		this.#finished = {
@@ -94,8 +104,8 @@ export class CombinedOutputCollector {
 				truncated: reasons.bytes || reasons.lines,
 				strategy: this.#strategy,
 				limits: {
-					bytes: CLI_MAX_RETURNED_OUTPUT_BYTES,
-					lines: CLI_MAX_RETURNED_OUTPUT_LINES,
+					bytes: this.#maxBytes,
+					lines: this.#maxLines,
 				},
 				original,
 				returned,
@@ -116,6 +126,8 @@ export class CombinedOutputCollector {
 class StreamTextCollector {
 	readonly #decoder = new StringDecoder("utf8");
 	readonly #strategy: CliOutputStrategy;
+	readonly #maxBytes: number;
+	readonly #maxLines: number;
 	#ended = false;
 	#originalBytes = 0;
 	#newlineCount = 0;
@@ -126,8 +138,10 @@ class StreamTextCollector {
 	#headSaturated = false;
 	rawBytesReceived = 0;
 
-	constructor(strategy: CliOutputStrategy) {
+	constructor(strategy: CliOutputStrategy, maxBytes: number, maxLines: number) {
 		this.#strategy = strategy;
+		this.#maxBytes = maxBytes;
+		this.#maxLines = maxLines;
 	}
 
 	get reservoir(): string {
@@ -165,12 +179,7 @@ class StreamTextCollector {
 		this.#endsWithNewline = text.endsWith("\n");
 		if (this.#strategy === "head" && this.#headSaturated) return;
 
-		const selected = selectText(
-			`${this.#reservoir}${text}`,
-			this.#strategy,
-			CLI_MAX_RETURNED_OUTPUT_BYTES,
-			CLI_MAX_RETURNED_OUTPUT_LINES,
-		);
+		const selected = selectText(`${this.#reservoir}${text}`, this.#strategy, this.#maxBytes, this.#maxLines);
 		this.#reservoir = selected.text;
 		if (!selected.consumedAll) {
 			this.#boundaryLinePartial = selected.boundaryLinePartial;

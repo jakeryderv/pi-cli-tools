@@ -62,7 +62,7 @@ describePosix("bundled CLI contract evaluation", () => {
 		await installFixture("rg");
 		const loader = await createBoundSession();
 
-		expect(session?.getActiveToolNames().sort()).toEqual(["cli_gh", "cli_rg"]);
+		expect(session?.getActiveToolNames().sort()).toEqual(["cli_docs", "cli_gh", "cli_rg"]);
 		const gh = requireTool("cli_gh");
 		const rg = requireTool("cli_rg");
 		expect(gh.parameters).toEqual(CliToolParameters);
@@ -154,7 +154,7 @@ describePosix("bundled CLI contract evaluation", () => {
 
 		await installFixture("rg");
 		await session?.reload();
-		expect(session?.getActiveToolNames().sort()).toEqual(["cli_gh", "cli_rg"]);
+		expect(session?.getActiveToolNames().sort()).toEqual(["cli_docs", "cli_gh", "cli_rg"]);
 		await expectNotExists(invocationPath("rg"));
 
 		await rm(join(binDirectory, "gh"));

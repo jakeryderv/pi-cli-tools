@@ -21,6 +21,13 @@ import {
 	type QuarantinedRegistryId,
 	type RegistrySource,
 } from "./types.js";
+import {
+	CLI_DOCS_MAX_SUBCOMMAND_BYTES,
+	CLI_DOCS_MAX_SUBCOMMAND_SEGMENT_BYTES,
+	CLI_INTROSPECTION_SUBCOMMAND_APPEND_MAX_BYTES,
+	CLI_MAX_ARGUMENT_BYTES,
+	CLI_MAX_TOTAL_ARGUMENT_BYTES,
+} from "./limits.js";
 
 const REGISTRY_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
 const MAX_REGISTRY_FILE_BYTES = 256 * 1024;
@@ -293,8 +300,18 @@ function validateDefinition(
 	layer: RegistryLayer,
 	path: string,
 ): RegistryIssue | undefined {
-	const acceptedExitCodes = definition.execution.accepted_exit_codes;
-	if (acceptedExitCodes && !isAcceptedExitCodes(acceptedExitCodes)) {
+	if (definition.tool_name === "cli_docs") {
+		return createFileIssue("invalid_definition", layer, path, 'Pi tool name "cli_docs" is reserved');
+	}
+
+	const acceptedExitPolicies = [
+		definition.execution.accepted_exit_codes,
+		definition.introspection.version?.accepted_exit_codes,
+		definition.introspection.help?.accepted_exit_codes,
+		definition.introspection.subcommand_help?.accepted_exit_codes,
+		definition.introspection.man === false ? undefined : definition.introspection.man.accepted_exit_codes,
+	];
+	if (acceptedExitPolicies.some((codes) => codes !== undefined && !isAcceptedExitCodes(codes))) {
 		return createFileIssue(
 			"invalid_definition",
 			layer,
@@ -305,6 +322,77 @@ function validateDefinition(
 
 	if (definition.binary.candidates.some((candidate) => candidate === "." || candidate === "..")) {
 		return createFileIssue("invalid_definition", layer, path, "Binary candidates cannot be '.' or '..'");
+	}
+
+	const argumentLists = [
+		definition.introspection.version?.args,
+		definition.introspection.help?.args,
+		definition.introspection.subcommand_help?.append_args,
+		definition.introspection.man === false ? undefined : definition.introspection.man.args,
+	].filter((args): args is string[] => args !== undefined);
+	for (const args of argumentLists) {
+		let totalBytes = 0;
+		for (const argument of args) {
+			const bytes = Buffer.byteLength(argument, "utf8");
+			if (argument.includes("\0") || bytes > CLI_MAX_ARGUMENT_BYTES) {
+				return createFileIssue(
+					"invalid_definition",
+					layer,
+					path,
+					`Introspection arguments must be NUL-free and at most ${String(CLI_MAX_ARGUMENT_BYTES)} UTF-8 bytes each`,
+				);
+			}
+			totalBytes += bytes + 1;
+		}
+		if (totalBytes > CLI_MAX_TOTAL_ARGUMENT_BYTES) {
+			return createFileIssue(
+				"invalid_definition",
+				layer,
+				path,
+				`Introspection arguments must total at most ${String(CLI_MAX_TOTAL_ARGUMENT_BYTES)} UTF-8 bytes`,
+			);
+		}
+	}
+
+	const subcommandHelp = definition.introspection.subcommand_help;
+	if (subcommandHelp) {
+		const appendBytes = subcommandHelp.append_args.reduce(
+			(total, argument) => total + Buffer.byteLength(argument, "utf8") + 1,
+			0,
+		);
+		if (appendBytes > CLI_INTROSPECTION_SUBCOMMAND_APPEND_MAX_BYTES) {
+			return createFileIssue(
+				"invalid_definition",
+				layer,
+				path,
+				`Subcommand help append arguments must reserve ${String(CLI_DOCS_MAX_SUBCOMMAND_BYTES)} UTF-8 bytes for the selected path`,
+			);
+		}
+		const seenPaths = new Set<string>();
+		for (const allowedPath of subcommandHelp.allowed_paths) {
+			const pathBytes = allowedPath.reduce((total, segment) => total + Buffer.byteLength(segment, "utf8") + 1, 0);
+			if (
+				pathBytes > CLI_DOCS_MAX_SUBCOMMAND_BYTES ||
+				allowedPath.some((segment) => Buffer.byteLength(segment, "utf8") > CLI_DOCS_MAX_SUBCOMMAND_SEGMENT_BYTES)
+			) {
+				return createFileIssue(
+					"invalid_definition",
+					layer,
+					path,
+					"Allowed subcommand paths exceed the configured UTF-8 selector budget",
+				);
+			}
+			const key = JSON.stringify(allowedPath);
+			if (seenPaths.has(key)) {
+				return createFileIssue("invalid_definition", layer, path, "Allowed subcommand paths must be unique");
+			}
+			seenPaths.add(key);
+		}
+	}
+
+	const manCandidates = definition.introspection.man === false ? [] : definition.introspection.man.binary.candidates;
+	if (manCandidates.some((candidate) => candidate === "." || candidate === "..")) {
+		return createFileIssue("invalid_definition", layer, path, "Man binary candidates cannot be '.' or '..'");
 	}
 
 	for (const source of definition.docs.official) {

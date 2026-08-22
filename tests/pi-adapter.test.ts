@@ -194,7 +194,7 @@ describePosix("registration planning and discovery", () => {
 
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_available_two"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_available_two", "cli_docs"]);
 		expect(state.discoveries.map(({ registry: entry, status }) => [entry.definition.id, status])).toEqual([
 			["available", "available"],
 			["available-two", "available"],
@@ -224,7 +224,7 @@ describePosix("registration planning and discovery", () => {
 		const state = createPiCliToolsState(createRegistry([createDefinition("available", "cli_available")]));
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools).toHaveLength(1);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_available", "cli_docs"]);
 		expect(state.registered[0]?.activeAtRegistration).toBe(false);
 		expect(formatCliToolsDiagnostics(state, [])).toContain("[inactive or filtered by Pi;");
 	});
@@ -260,7 +260,7 @@ describePosix("registration planning and discovery", () => {
 
 		await activatePiCliTools(harness.api, state, root);
 
-		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_startup"]);
+		expect(harness.tools.map(({ name }) => name)).toEqual(["cli_startup", "cli_docs"]);
 		await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });
