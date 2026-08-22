@@ -49,7 +49,13 @@ for (const packagedFile of packagedFiles) {
 	if (!expectedFiles.has(packagedFile)) throw new Error(`Unexpected package file was included: ${packagedFile}`);
 }
 
-const packageManifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const packageManifestText = await readFile(new URL("../package.json", import.meta.url), "utf8");
+let packageManifest;
+try {
+	packageManifest = JSON.parse(packageManifestText);
+} catch (error) {
+	throw new Error("package.json contains invalid JSON", { cause: error });
+}
 for (const peer of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
 	if (packageManifest.peerDependencies?.[peer] !== "*") {
 		throw new Error(`Pi host package must be a wildcard peer dependency: ${peer}`);
