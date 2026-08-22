@@ -11,6 +11,7 @@ import type { Static } from "typebox";
 
 import { discoverRegistry } from "../src/introspect.js";
 import { CLI_MAX_ARGUMENT_BYTES, CLI_MAX_ARGUMENT_COUNT } from "../src/limits.js";
+import { DEFAULT_ACCEPTED_EXIT_CODES, getAcceptedExitCodes, isAcceptedExitCodes } from "../src/registry.js";
 import { CliExecutionRequestError, runCli, type CliExecutionRequestErrorCode } from "../src/runner.js";
 import type {
 	CliDiscovery,
@@ -72,6 +73,8 @@ export type CliToolResultDetails =
 			readonly adapter: "pi-cli-tools";
 			readonly kind: "execution";
 			readonly registryId: string;
+			/** Optional only for compatibility with v0.1c session history. */
+			readonly acceptedExitCodes?: readonly number[];
 			readonly execution: CliExecutionResult;
 			readonly spoolCleanup: CliSpoolCleanupOwnership;
 	  }
@@ -188,6 +191,7 @@ export function createNativeCliTool(
 	discovery: Extract<CliDiscovery, { status: "available" }>,
 ): ToolDefinition<typeof CliToolParameters, CliToolResultDetails> {
 	const { definition } = discovery.registry;
+	const acceptedExitCodes = [...getAcceptedExitCodes(definition)];
 	return {
 		name: definition.tool_name,
 		label: definition.tool_name,
@@ -202,11 +206,12 @@ export function createNativeCliTool(
 					adapter: "pi-cli-tools",
 					kind: "execution",
 					registryId: definition.id,
+					acceptedExitCodes: [...acceptedExitCodes],
 					execution,
 					spoolCleanup: createSpoolCleanupOwnership(execution),
 				};
 				return {
-					content: [{ type: "text", text: formatCliExecutionForModel(execution) }],
+					content: [{ type: "text", text: formatCliExecutionForModel(execution, acceptedExitCodes) }],
 					details,
 				};
 			} catch (error) {
@@ -229,7 +234,7 @@ export function createNativeCliTool(
 				: "(arguments pending)";
 			return new Text(theme.fg("toolTitle", theme.bold(`${definition.tool_name} `)) + theme.fg("muted", preview), 0, 0);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme, context) {
 			if (isPartial) return new Text(theme.fg("warning", "Running…"), 0, 0);
 			const details = result.details;
 			if (!isCliToolResultDetails(details)) {
@@ -239,7 +244,7 @@ export function createNativeCliTool(
 				const content = result.content.find(({ type }) => type === "text");
 				return new Text(content?.type === "text" ? sanitizeModelText(content.text) : "(no output)", 0, 0);
 			}
-			return new Text(formatCollapsedResult(details, theme), 0, 0);
+			return new Text(formatCollapsedResult(details, theme, context.isError), 0, 0);
 		},
 	};
 }
@@ -278,17 +283,25 @@ export function isCliToolResultDetails(value: unknown): value is CliToolResultDe
 	if (value.kind === "request_error") {
 		return isRecord(value.error) && typeof value.error.code === "string" && typeof value.error.message === "string";
 	}
-	return value.kind === "execution" && isRecord(value.execution) && typeof value.execution.status === "string";
+	if (value.kind !== "execution" || !isRecord(value.execution) || typeof value.execution.status !== "string") {
+		return false;
+	}
+	return !("acceptedExitCodes" in value) || isAcceptedExitCodes(value.acceptedExitCodes);
 }
 
-export function isCliToolResultError(details: CliToolResultDetails): boolean {
+export function isCliToolResultError(
+	details: CliToolResultDetails,
+	acceptedExitCodes: readonly number[] = getSerializedAcceptedExitCodes(details),
+): boolean {
 	if (details.kind === "request_error") return true;
-	const execution = details.execution;
-	return execution.status !== "exited" || execution.exitCode !== 0 || execution.signal !== null;
+	return !isAcceptedExecution(details.execution, acceptedExitCodes);
 }
 
-export function formatCliExecutionForModel(execution: CliExecutionResult): string {
-	let content = formatStatusLine(execution);
+export function formatCliExecutionForModel(
+	execution: CliExecutionResult,
+	acceptedExitCodes: readonly number[] = DEFAULT_ACCEPTED_EXIT_CODES,
+): string {
+	let content = formatStatusLine(execution, acceptedExitCodes);
 	const stdout = sanitizeModelText(execution.stdout);
 	const stderr = sanitizeModelText(execution.stderr);
 	if (stdout.length > 0) content = appendBlock(content, `stdout:\n${stdout}`);
@@ -429,7 +442,7 @@ export function formatCliToolsDiagnostics(
 				: active.has(toolName)
 					? "active"
 					: "inactive or filtered by Pi";
-			return `  ${toolName} (${definition.id}) -> ${clipDiagnosticValue(discovery.resolution.executablePath)} [${status}]`;
+			return `  ${toolName} (${definition.id}) -> ${clipDiagnosticValue(discovery.resolution.executablePath)} [${status}; ${formatExecutionPolicy(definition)}]`;
 		}),
 	);
 	appendDiagnosticSection(
@@ -452,10 +465,11 @@ export function formatCliToolsDiagnostics(
 		lines,
 		"Missing",
 		missing.map(({ registry, resolution }) => {
-			const candidates = formatDiagnosticList(registry.definition.binary.candidates);
+			const { definition } = registry;
+			const candidates = formatDiagnosticList(definition.binary.candidates);
 			const checked = formatDiagnosticList(resolution.checkedPaths);
 			const checkedSuffix = checked.length > 0 ? `; checked: ${checked}` : "; PATH supplied no searchable directories";
-			return `  ${registry.definition.tool_name} (${registry.definition.id}): ${candidates}${checkedSuffix}`;
+			return `  ${definition.tool_name} (${definition.id}) [${formatExecutionPolicy(definition)}]: ${candidates}${checkedSuffix}`;
 		}),
 	);
 	appendDiagnosticSection(
@@ -522,11 +536,29 @@ export function hasCliToolsWarnings(state: PiCliToolsState, currentTools?: reado
 	);
 }
 
-function formatStatusLine(execution: CliExecutionResult): string {
+function getSerializedAcceptedExitCodes(details: CliToolResultDetails): readonly number[] {
+	return details.kind === "execution" && details.acceptedExitCodes
+		? details.acceptedExitCodes
+		: DEFAULT_ACCEPTED_EXIT_CODES;
+}
+
+function isAcceptedExecution(execution: CliExecutionResult, acceptedExitCodes: readonly number[]): boolean {
+	return (
+		execution.status === "exited" &&
+		execution.signal === null &&
+		execution.exitCode !== null &&
+		acceptedExitCodes.includes(execution.exitCode)
+	);
+}
+
+function formatStatusLine(execution: CliExecutionResult, acceptedExitCodes: readonly number[]): string {
 	const fields = [`Status: ${execution.status}`];
 	if (execution.status !== "spawn_error") {
 		fields.push(`code=${execution.exitCode === null ? "none" : String(execution.exitCode)}`);
 		if (execution.signal) fields.push(`signal=${execution.signal}`);
+		if (execution.status === "exited") {
+			fields.push(`accepted=${String(isAcceptedExecution(execution, acceptedExitCodes))}`);
+		}
 	}
 	fields.push(`duration=${String(execution.durationMs)}ms`);
 	return fields.join("; ");
@@ -535,15 +567,24 @@ function formatStatusLine(execution: CliExecutionResult): string {
 function formatCollapsedResult(
 	details: CliToolResultDetails,
 	theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+	finalIsError?: boolean,
 ): string {
 	if (details.kind === "request_error") {
 		return theme.fg("error", `request error: ${details.error.code}`);
 	}
 	const execution = details.execution;
+	const policyError = isCliToolResultError(details);
+	const renderedAsError = finalIsError ?? policyError;
 	let summary: string;
 	if (execution.status === "exited") {
-		const exit = execution.signal ? `signal ${execution.signal}` : `exit ${String(execution.exitCode)}`;
-		summary = theme.fg(isCliToolResultError(details) ? "error" : "success", exit);
+		const accepted = !policyError;
+		let exit = execution.signal ? `signal ${execution.signal}` : `exit ${String(execution.exitCode)}`;
+		if (accepted && execution.exitCode !== 0) {
+			exit += renderedAsError ? " (accepted policy; marked error)" : " (accepted)";
+		} else if (policyError !== renderedAsError) {
+			exit += renderedAsError ? " (marked error)" : " (unaccepted policy; marked successful)";
+		}
+		summary = theme.fg(renderedAsError ? "error" : "success", exit);
 	} else if (execution.status === "cancelled") {
 		summary = theme.fg("warning", "cancelled");
 	} else {
@@ -685,6 +726,19 @@ function sourceInfoEquals(left: SourceInfo, right: SourceInfo): boolean {
 		left.origin === right.origin &&
 		left.baseDir === right.baseDir
 	);
+}
+
+function formatExecutionPolicy(definition: LoadedRegistryDefinition["definition"]): string {
+	const policy = [
+		`timeout=${String(definition.execution.timeout_ms)}ms`,
+		`cwd=${definition.execution.cwd}`,
+		`env=${definition.execution.inherit_env ? "inherit" : "empty"}`,
+	];
+	const acceptedExitCodes = getAcceptedExitCodes(definition);
+	if (acceptedExitCodes.length !== 1 || acceptedExitCodes[0] !== 0) {
+		policy.push(`accepted exit codes: ${formatDiagnosticList(acceptedExitCodes.map(String))}`);
+	}
+	return policy.join("; ");
 }
 
 function formatDiagnosticList(values: readonly string[]): string {

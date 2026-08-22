@@ -1,0 +1,32 @@
+id: ripgrep
+tool_name: cli_rg
+
+binary:
+  candidates: [rg]
+
+routing:
+  description: Search local files recursively with ripgrep for advanced literal, regular-expression, file-type, and ignore-aware queries. Pass an explicit search path such as ".".
+  prefer_for:
+    - advanced local searches that need ripgrep flags, regular expressions, file types, or ignore behavior
+    - locating matching lines or files across a local directory tree
+  avoid_for:
+    - editing files
+    - routine simple searches covered by Pi built-in tools
+    - querying remote repositories or GitHub resources
+
+introspection:
+  version:
+    args: [--version]
+  help:
+    args: [--help]
+  man: false
+
+docs:
+  official:
+    - https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md
+
+execution:
+  timeout_ms: 120000
+  cwd: session
+  inherit_env: false
+  accepted_exit_codes: [0, 1]

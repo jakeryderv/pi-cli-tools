@@ -35,6 +35,7 @@ describePosix("real Pi lifecycle", () => {
 		await mkdir(join(agentDirectory, "cli-tools"), { recursive: true });
 		await mkdir(binDirectory);
 		await symlink(process.execPath, join(binDirectory, "fixture-cli"));
+		await symlink(process.execPath, join(binDirectory, "rg"));
 		await writeFile(
 			join(agentDirectory, "cli-tools", "github.yaml"),
 			stringify(createDefinition("github", "cli_gh", { binary: { candidates: ["fixture-cli"] } })),
@@ -144,6 +145,109 @@ describePosix("real Pi lifecycle", () => {
 		}
 	});
 
+	it.each([
+		[1, false],
+		[2, true],
+	] as const)("classifies bundled ripgrep exit %i through Pi's provider/tool pipeline", async (exitCode, isError) => {
+		const faux = fauxProvider({ provider: `pi-cli-tools-ripgrep-${String(exitCode)}` });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("cli_rg", { args: [fixturePath, "exit", String(exitCode)] }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("finished"),
+		]);
+		const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false });
+		modelRuntime.registerNativeProvider(faux.provider);
+		const loader = createLoader([{ name: "pi-cli-tools", factory: cliToolsExtension }]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			model: faux.getModel(),
+			modelRuntime,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		const completedTools: { isError: boolean; details: unknown }[] = [];
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type === "tool_execution_end" && event.toolName === "cli_rg") {
+				const result = event.result as { details?: unknown };
+				completedTools.push({ isError: event.isError, details: result.details });
+			}
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			await session.prompt("Run the configured ripgrep fixture.");
+
+			expect(completedTools).toHaveLength(1);
+			expect(completedTools[0]?.isError).toBe(isError);
+			const details = completedTools[0]?.details as CliToolResultDetails;
+			expect(details).toMatchObject({
+				adapter: "pi-cli-tools",
+				kind: "execution",
+				registryId: "ripgrep",
+				acceptedExitCodes: [0, 1],
+				execution: { status: "exited", exitCode },
+			});
+			const toolResult = session.messages.find(
+				(message) => message.role === "toolResult" && message.toolName === "cli_rg",
+			);
+			expect(toolResult).toMatchObject({ role: "toolResult", isError });
+		} finally {
+			unsubscribe();
+			session.dispose();
+		}
+	});
+
+	it("preserves an earlier Pi middleware error for bundled ripgrep exit 1", async () => {
+		const faux = fauxProvider({ provider: "pi-cli-tools-ripgrep-earlier-error" });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("cli_rg", { args: [fixturePath, "exit", "1"] }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("finished"),
+		]);
+		const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false });
+		modelRuntime.registerNativeProvider(faux.provider);
+		const loader = createLoader([
+			{
+				name: "earlier-error-middleware",
+				factory(pi) {
+					pi.on("tool_result", (event) => {
+						if (event.toolName === "cli_rg") return { isError: true };
+						return;
+					});
+				},
+			},
+			{ name: "pi-cli-tools", factory: cliToolsExtension },
+		]);
+		await loader.reload();
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir: agentDirectory,
+			model: faux.getModel(),
+			modelRuntime,
+			resourceLoader: loader,
+			sessionManager: SessionManager.inMemory(root),
+			noTools: "builtin",
+		});
+		const completedTools: boolean[] = [];
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type === "tool_execution_end" && event.toolName === "cli_rg") {
+				completedTools.push(event.isError);
+			}
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			await session.prompt("Run the configured ripgrep fixture.");
+			expect(completedTools).toEqual([true]);
+		} finally {
+			unsubscribe();
+			session.dispose();
+		}
+	});
+
 	it("reloads through the public session lifecycle when an executable appears or disappears", async () => {
 		await writeFile(
 			join(agentDirectory, "cli-tools", "github.yaml"),
@@ -214,7 +318,7 @@ describePosix("real Pi lifecycle", () => {
 			await session.bindExtensions({ mode: "print" });
 			expect(session.getToolDefinition("cli_gh")?.label).toBe("Earlier owner");
 			const adapterExtension = loader.getExtensions().extensions.find(({ path }) => path.includes("pi-cli-tools"));
-			expect(adapterExtension?.tools.size).toBe(0);
+			expect([...(adapterExtension?.tools.keys() ?? [])]).toEqual(["cli_rg"]);
 		} finally {
 			session.dispose();
 		}

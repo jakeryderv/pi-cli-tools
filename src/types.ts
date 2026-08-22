@@ -1,7 +1,14 @@
 import Type from "typebox";
 import type { Static } from "typebox";
 
-import { CLI_MAX_ARGUMENT_BYTES, CLI_MAX_ARGUMENT_COUNT, CLI_MAX_TIMEOUT_MS, CLI_MIN_TIMEOUT_MS } from "./limits.js";
+import {
+	CLI_MAX_ACCEPTED_EXIT_CODES,
+	CLI_MAX_ARGUMENT_BYTES,
+	CLI_MAX_ARGUMENT_COUNT,
+	CLI_MAX_PROCESS_EXIT_CODE,
+	CLI_MAX_TIMEOUT_MS,
+	CLI_MIN_TIMEOUT_MS,
+} from "./limits.js";
 
 export const RegistryIdSchema = Type.String({
 	minLength: 1,
@@ -22,6 +29,12 @@ const ArgumentListSchema = Type.Array(ArgumentSchema, {
 
 const RoutingListSchema = Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
 	maxItems: 32,
+	uniqueItems: true,
+});
+
+export const AcceptedExitCodesSchema = Type.Array(Type.Integer({ minimum: 0, maximum: CLI_MAX_PROCESS_EXIT_CODE }), {
+	minItems: 1,
+	maxItems: CLI_MAX_ACCEPTED_EXIT_CODES,
 	uniqueItems: true,
 });
 
@@ -92,6 +105,7 @@ export const RegistryDefinitionSchema = Type.Object(
 				timeout_ms: Type.Integer({ minimum: CLI_MIN_TIMEOUT_MS, maximum: CLI_MAX_TIMEOUT_MS }),
 				cwd: Type.Literal("session"),
 				inherit_env: Type.Boolean(),
+				accepted_exit_codes: Type.Optional(AcceptedExitCodesSchema),
 			},
 			{ additionalProperties: false },
 		),

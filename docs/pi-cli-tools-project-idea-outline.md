@@ -85,9 +85,8 @@ pi-cli-tools/
 │   ├── docs.ts            # documentation retrieval and focused search
 │   └── cache.ts           # introspection and documentation cache
 ├── tools/
-│   ├── firecrawl.yaml
-│   ├── playwright.yaml
-│   └── github.yaml
+│   ├── github.yaml
+│   └── ripgrep.yaml
 └── tests/
     └── fixtures/
         └── bin/            # controlled fake executables for runner tests
@@ -139,6 +138,8 @@ execution:
 
 `id`, `tool_name`, and the executable name are intentionally separate. For example, a stable registry entry named `github` may expose `cli_gh` while invoking an executable named `gh`.
 
+Definitions may optionally declare `execution.accepted_exit_codes` as a nonempty, duplicate-free list of integer process exit codes from 0 through 255. Omission means exactly `[0]`; an explicit list is authoritative and does not implicitly add zero. The bundled ripgrep definition uses `[0, 1]` because exit 1 represents no matches. Complete higher-precedence replacement means an override that omits the field returns to `[0]` rather than inheriting a lower definition's list.
+
 ### Validation rules
 
 The registry should be validated before any tools are registered:
@@ -148,6 +149,7 @@ The registry should be validated before any tools are registered:
 - Tool-name collisions with built-in or extension tools must fail clearly by default.
 - Definitions must use known fields and valid values.
 - Argument lists must contain strings only.
+- Accepted exit codes, when present, must contain 1 through 256 unique finite integers in the portable 0-through-255 process-exit range; canonical negative zero is rejected because it is not JSON-stable.
 - Timeouts and output limits must remain within hard runtime bounds.
 - A missing executable is an availability condition, not an extension startup failure.
 - An invalid definition is reported with its source file and is not registered.
@@ -276,9 +278,9 @@ CliExecutionResult
 
 The Pi adapter turns this into sanitized, concise model-facing text plus serializable structured `details` for rendering and diagnostics. Details retain the complete runner result, including separate stdout/stderr, capture and truncation metadata, spool path/failure and conditional cleanup ownership, and process-group cleanup state. Cleanup is not applicable when no paths were retained; otherwise `pi-cli-tools` owns the retained artifacts until an embedding host calls `removeCliOutputSpool()` or the user explicitly removes a disclosed path. Because Pi persists tool details and model-facing output in session history, both forms must be treated as potentially sensitive.
 
-The adapter's `tool_result` handler marks request errors, spawn errors, timeouts, cancellations, signal exits, and nonzero exits as Pi errors without discarding their structured results. Exit zero without a terminating signal is not an error; truncation, partial capture, and spool warnings do not by themselves convert an otherwise successful exit into an error.
+The adapter's `tool_result` handler classifies a result as successful only when it is a normal, signal-free exit whose actual code appears in the matching registered definition's accepted list. Request errors, spawn errors, timeouts, cancellations, signal exits, null exit codes, and unaccepted exits remain Pi errors without discarding their structured results. Truncation, partial capture, and spool warnings do not by themselves convert an otherwise accepted exit into an error.
 
-Non-zero exit codes should always be preserved and clearly displayed, but the generic runtime should not assume that every non-zero code has the same meaning. Some CLIs use non-zero codes for domain outcomes such as “no matches.” CLI-specific definitions may later declare accepted exit codes.
+Accepted-exit classification is adapter policy, not runner semantics. The agent-independent runner always preserves the real process status and exit code. Newly emitted Pi details snapshot the effective list for historical rendering, while live middleware trusts the matching registered definition. Legacy v0.1c details without a snapshot retain `[0]` behavior. Model-facing status distinguishes accepted and unaccepted exits without adding the full policy list to permanent model context.
 
 ### Output limits
 
@@ -299,7 +301,7 @@ Collection uses bounded head/tail reservoirs rather than buffering complete outp
 
 Combined raw spool payload is capped at 64 MiB. Capture cutoff or cap exhaustion returns a partial path and can never claim complete output. Setup, write, assembly, and sidecar-cleanup failures remain visible metadata without replacing process status. Package-owned retained output has a 512 MiB aggregate quota per temporary parent; assembly can temporarily use roughly twice the payload cap. Files can contain credentials or adversarial output and remain until the consumer calls `removeCliOutputSpool()`.
 
-The later Pi adapter will use tail output as its default unless registry-configurable output policy is introduced. It must still bound final rendered status, labels, notices, paths, and process text to Pi's full 50 KiB and 2,000-line ceiling.
+The v0.1d Pi adapter uses tail output for every CLI unless registry-configurable output policy is introduced. This is appropriate for general command output but can omit the beginning of search results; the hermetic evaluation records that UX limitation rather than expanding policy scope. Final rendered status, labels, notices, paths, and process text remain bounded to Pi's full 50 KiB and 2,000-line ceiling.
 
 ## Local introspection
 
@@ -388,6 +390,7 @@ Installing the Pi package grants its extension normal extension privileges. Conf
 The security model should state explicitly:
 
 - Registry definitions are trusted configuration.
+- Accepted exit codes classify normal process results; they do not authorize an operation or establish safety.
 - Project-local definitions are ignored until the project is trusted.
 - Executables are never installed automatically.
 - Executables are invoked by resolved path without a shell.
@@ -397,7 +400,7 @@ The security model should state explicitly:
 - Timeout and cancellation reduce runaway execution risk but do not provide sandboxing.
 - Documentation and process output may contain adversarial text and are returned as attributed reference data.
 
-Many authenticated CLIs require their inherited environment, so v0.1 may support `inherit_env: true`. The registry should make that choice visible, and a later version may add allow/deny lists or explicit environment profiles.
+Many authenticated CLIs require their inherited environment. The bundled GitHub definition therefore uses `inherit_env: true`, while ripgrep uses an empty environment to avoid ambient credentials and `RIPGREP_CONFIG_PATH`. Diagnostics make that choice visible. A later version may add allow/deny lists or explicit environment profiles.
 
 Deterministic confirmation policies may also be added later. The runtime should not attempt to classify arbitrary arguments as safe or destructive from help text alone.
 
@@ -434,15 +437,15 @@ The extension should expose a status command, such as `/cli-tools`, that reports
 - Activation state
 - How to refresh discovery after installing a CLI
 
-Diagnostics should not require the model or consume conversation context. v0.1c stores activation-time collision outcomes rather than recomputing collisions from names, which avoids classifying successfully registered adapter tools as collisions with themselves. Diagnostics instruct users to run `/reload` after executable or registry changes.
+Diagnostics should not require the model or consume conversation context. v0.1c stores activation-time collision outcomes rather than recomputing collisions from names, which avoids classifying successfully registered adapter tools as collisions with themselves. v0.1d also exposes bounded timeout, session-cwd, and environment policy for registered and missing definitions, plus non-default accepted-exit policy. Diagnostics instruct users to run `/reload` after executable or registry changes.
 
 ## Testing strategy
 
 ### Registry tests
 
 - Valid and invalid definitions
-- Unknown fields and invalid argument lists
-- Configuration precedence and complete replacement
+- Unknown fields, invalid argument lists, and strict accepted-exit boundaries
+- Configuration precedence, complete replacement, and invalid-override quarantine
 - Duplicate IDs and tool-name collisions
 - Missing executable behavior
 
@@ -473,10 +476,12 @@ Use controlled fixture executables to verify:
 ### Pi integration tests
 
 - Package discovery and extension loading
+- Both bundled definitions through controlled executables, without host-installed CLIs or third-party CLI network requests
 - Native tool registration only for available CLIs
 - Clear handling of registration collisions
+- Accepted and unaccepted nonzero classification through the real Pi tool-result pipeline
 - Tool cancellation through Pi's signal
-- Structured result rendering
+- Structured result rendering and bounded large output
 - Reload or refresh after executable changes
 
 ## Success criteria
@@ -518,6 +523,15 @@ The initial idea is validated when:
 - Return bounded sanitized text, structured execution details, explicit Pi error classification, and compact TUI rendering.
 - Report registered, active, missing, disabled, quarantined, colliding, unsupported, and failed registrations through `/cli-tools`.
 - Use `/reload` for deterministic rediscovery and registration refresh.
+
+### v0.1d — Second CLI and hermetic contract evaluation
+
+- Bundle a strict ripgrep definition alongside GitHub CLI, with contrasting empty-environment policy and accepted no-match exit 1.
+- Add optional strictly validated definition-level accepted exit codes while keeping the runner policy-neutral.
+- Classify accepted exits only in the Pi adapter and preserve actual nonzero status in details and concise rendering.
+- Make timeout, cwd, environment, and non-default accepted-exit policy visible in bounded human diagnostics.
+- Exercise both production definitions through controlled executables, real Pi lifecycle and middleware, reload, bounded output, and packed production installation.
+- Record deterministic evidence and residual limitations without claiming third-party CLI conformance or model-selection superiority.
 
 ### v0.1 — Reliable registry and execution
 

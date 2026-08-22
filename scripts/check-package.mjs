@@ -40,6 +40,7 @@ const expectedFiles = new Set([
 	"src/spool.ts",
 	"src/types.ts",
 	"tools/github.yaml",
+	"tools/ripgrep.yaml",
 ]);
 
 for (const expectedFile of expectedFiles) {
