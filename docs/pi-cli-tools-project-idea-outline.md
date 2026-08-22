@@ -43,11 +43,11 @@ At least through the initial releases, the project will not:
 
 Different parts of the system have different authorities:
 
-| Concern | Source of truth |
-| --- | --- |
-| Identity, routing, introspection strategy, execution policy | Declarative registry |
-| Availability, version, syntax, and local help | Installed executable |
-| Detailed behavior not available locally | Configured official documentation |
+| Concern                                                     | Source of truth                   |
+| ----------------------------------------------------------- | --------------------------------- |
+| Identity, routing, introspection strategy, execution policy | Declarative registry              |
+| Availability, version, syntax, and local help               | Installed executable              |
+| Detailed behavior not available locally                     | Configured official documentation |
 
 Routing descriptions should remain curated and stable. Installed help may be used for documentation and validation, but should not silently rewrite a tool's routing description at runtime.
 
@@ -368,14 +368,14 @@ Deterministic confirmation policies may also be added later. The runtime should 
 
 ## Separation of concerns
 
-| Layer | Purpose |
-| --- | --- |
-| Standalone CLI | Portable, reusable capability |
-| CLI registry/runtime | Identity, discovery, execution, introspection, and documentation |
-| Pi extension | Registers tools, adapts results, controls activation, and exposes commands |
-| `cli_docs` | Supplies current syntax and behavior on demand |
-| Skills | Teach higher-level workflows that may combine multiple tools |
-| MCP/project extensions | Provide rich, structured, stateful, or project-specific integrations |
+| Layer                  | Purpose                                                                    |
+| ---------------------- | -------------------------------------------------------------------------- |
+| Standalone CLI         | Portable, reusable capability                                              |
+| CLI registry/runtime   | Identity, discovery, execution, introspection, and documentation           |
+| Pi extension           | Registers tools, adapts results, controls activation, and exposes commands |
+| `cli_docs`             | Supplies current syntax and behavior on demand                             |
+| Skills                 | Teach higher-level workflows that may combine multiple tools               |
+| MCP/project extensions | Provide rich, structured, stateful, or project-specific integrations       |
 
 The intended configuration model is:
 

@@ -1,0 +1,67 @@
+name: Feature or design proposal
+description: Propose a capability or significant design change
+title: "proposal: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Describe the user need without prescribing an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What observable result would make this successful?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List concrete, verifiable criteria.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested approach
+      description: Optional implementation or design ideas.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing tools or simpler approaches where applicable.
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and trust impact
+      description: Consider process execution, PATH, environment, credentials, filesystem/network effects, project trust, and untrusted output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: documentation
+    attributes:
+      label: Documentation and compatibility impact
+      description: Note user, API, architecture, migration, package, or release implications.
+
+  - type: dropdown
+    id: adr
+    attributes:
+      label: Could this require an ADR?
+      options:
+        - No — local or reversible implementation detail
+        - Maybe — trade-offs need design review
+        - Yes — durable or cross-cutting decision
+    validations:
+      required: true

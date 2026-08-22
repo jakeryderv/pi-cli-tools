@@ -1,0 +1,64 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials or sensitive output. Report vulnerabilities through the private security advisory link instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Which release or commit exhibits the problem?
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant OS, Node.js, Pi, CLI, and package versions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest deterministic reproduction you can.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or verification evidence
+      description: Remove credentials, tokens, private paths, and other sensitive data.
+      render: text
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and workarounds
+      description: Describe severity, frequency, and any known workaround.
