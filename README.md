@@ -4,16 +4,17 @@ A Pi package for registering standalone command-line programs as native tools, w
 
 ## Status
 
-The extension currently:
+The package currently:
 
 - Loads and strictly validates bundled and user registry definitions.
 - Merges definitions by stable ID, including explicit user disable entries.
 - Resolves configured executable candidates to exact paths without launching them.
+- Provides an agent-independent Linux/macOS runner for bounded shell-free execution, process-group cleanup, separate output capture, and private capped spooling.
 - Exposes `/cli-tools` for human-facing registry and availability diagnostics.
 
-It does not register executable CLI tools or run configured programs yet.
+The Pi extension does not register executable CLI tools or call the runner yet. Native tool registration and result rendering remain a later adapter milestone.
 
-See the [project design outline](docs/pi-cli-tools-project-idea-outline.md) for the intended architecture, execution contract, security model, and roadmap.
+See the [project design outline](https://github.com/jakeryderv/pi-cli-tools/blob/main/docs/pi-cli-tools-project-idea-outline.md) for the intended architecture, execution contract, security model, and roadmap.
 
 ## Why this project
 
@@ -28,9 +29,11 @@ Pi
 
 ## Security
 
-Pi extensions run with the user's full system permissions. When this project begins launching configured CLIs, those programs will be able to access the same files, environment variables, credentials, and network resources available to the Pi process.
+Pi extensions run with the user's full system permissions. When the extension begins connecting configured CLIs to the runner, those programs will be able to access the same files, inherited environment variables, credentials, and network resources available to the Pi process.
 
-Shell-free invocation, timeouts, cancellation, and bounded output reduce specific risks; they do not sandbox a CLI or guarantee that an operation is non-destructive. See [SECURITY.md](SECURITY.md) and the design document's security model before using future releases with sensitive credentials.
+The core runner invokes the configured top-level path without a shell, bounds arguments and output, and cleans the original POSIX process group after timeout, cancellation, or direct-child exit. These measures do not sandbox a CLI, guarantee recursive containment, or make an operation non-destructive. Interpreters, loaders, plugins, and child programs can still resolve through an inherited environment. Truncated or incomplete raw output may be retained in an owner-only temporary file and can contain secrets. Retention has a 512 MiB aggregate quota per temporary parent, and callers own explicit cleanup through `removeCliOutputSpool()`.
+
+See the repository [security policy](https://github.com/jakeryderv/pi-cli-tools/blob/main/SECURITY.md) and [ADR-0002](https://github.com/jakeryderv/pi-cli-tools/blob/main/docs/adr/0002-bounded-posix-cli-runner.md).
 
 ## Registry configuration
 
@@ -90,13 +93,13 @@ npm run smoke:pi
 
 ## Packaging
 
-The initial Pi package ships TypeScript source directly and has no generated production build. See [ADR-0001](docs/adr/0001-source-distributed-typescript-package.md) for the rationale and review triggers.
+The initial Pi package ships TypeScript source directly and has no generated production build. See [ADR-0001](https://github.com/jakeryderv/pi-cli-tools/blob/main/docs/adr/0001-source-distributed-typescript-package.md) for the rationale and review triggers.
 
 The package remains private and versioned `0.0.0` until the first release process is designed. No release or npm publication should be inferred from a successful local pack check.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [development lifecycle](docs/development/lifecycle.md).
+See the repository [contributing guide](https://github.com/jakeryderv/pi-cli-tools/blob/main/CONTRIBUTING.md) and [development lifecycle](https://github.com/jakeryderv/pi-cli-tools/blob/main/docs/development/lifecycle.md).
 
 ## License
 

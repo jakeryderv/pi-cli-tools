@@ -74,8 +74,12 @@ pi-cli-tools/
 │   └── cli-tools.ts       # Pi integration, registration, and commands
 ├── src/
 │   ├── types.ts           # agent-independent contracts
+│   ├── limits.ts          # shared registry and runtime hard limits
 │   ├── registry.ts        # load, merge, and validate definitions
-│   ├── runner.ts          # bounded shell-free process execution
+│   ├── runner.ts          # bounded shell-free execution facade
+│   ├── process-lifecycle.ts # process-group supervision
+│   ├── output.ts          # deterministic bounded text projection
+│   ├── spool.ts           # private lazy raw-output retention
 │   ├── introspect.ts      # executable, version, help, and man discovery
 │   ├── docs.ts            # documentation retrieval and focused search
 │   └── cache.ts           # introspection and documentation cache
@@ -184,7 +188,7 @@ Startup should not run version, help, man, or network documentation commands.
 
 A configured but missing executable should not produce a broken native tool. It should appear in diagnostics as unavailable, including the executable candidates that were checked.
 
-Execution should use the exact path selected during discovery rather than searching `PATH` again for every call. A reload or explicit refresh command may repeat discovery if the user installs or replaces a CLI during a session.
+Execution should pass the selected top-level path directly rather than asking the runner to search `PATH` again for every call. This does not control shebang interpreters, loaders, plugins, or children selected by the executable. A reload or explicit refresh command may repeat discovery if the user installs or replaces a CLI during a session.
 
 ### Activation and scale
 
@@ -217,18 +221,36 @@ Richer CLI-specific tools may be added selectively after the generic interface i
 
 For every invocation, the runner should:
 
-1. Use the exact executable path selected during discovery.
+1. Pass the top-level executable path selected during discovery directly to the process API without another runner-initiated `PATH` search.
 2. Pass arguments directly to the process without a shell.
 3. Validate argument count and total argument size against hard limits.
 4. Use the session working directory or a configured fixed directory.
 5. Apply the configured environment policy.
 6. Honor the caller's cancellation signal.
-7. Enforce the configured timeout and terminate the process tree.
+7. Enforce the configured child timeout and clean the original process group on timeout, cancellation, or direct-child exit.
 8. Capture stdout and stderr separately.
 9. Preserve exit code, terminating signal, duration, timeout, and cancellation state.
 10. Bound all data returned to the model.
 
 “Safe execution” in this project means shell-free, bounded process invocation. It does not mean that the installed program is sandboxed, trustworthy, or non-destructive.
+
+The v0.1b core runner makes these boundaries concrete:
+
+- Execution is supported on Linux and macOS; every other platform is rejected before spawn.
+- Executable and working-directory paths must be absolute, NUL-free, and at most 4,096 UTF-8 bytes.
+- At most 128 arguments are accepted. Each is at most 8,192 UTF-8 bytes and the array totals at most 32 KiB including one separator byte per argument. Empty arguments remain valid.
+- Timeout must be an integer from 100 through 600,000 milliseconds.
+- The trusted adapter passes a concrete session or registry-fixed working directory. The execution request exposes no model-selected directory.
+- Environment policy is either a point-in-time inherited snapshot or a truly empty environment. There is no request-level override map.
+- Stdin is ignored and no TTY is allocated.
+- Cancellation and timeout signal the detached process group with `SIGTERM`, escalate a surviving group to `SIGKILL` after 500 milliseconds, and stop process-control confirmation after five seconds.
+- A surviving original process group is also cleaned after direct-child exit while preserving `exited` status. Cancellation or child timeout during drain accelerates cleanup without changing the first cause.
+- Pipe draining stops five seconds after direct-child exit when an escaped descendant holds inherited descriptors. Capture cutoff is explicit and distinct from model truncation.
+- Process-group termination is best effort rather than sandboxing: descendants can escape by creating a new session or process group.
+- The timeout bounds child execution and process control, not non-cancellable temporary-filesystem finalization. `durationMs` includes finalization and can exceed `timeoutMs`.
+- Passing a fixed top-level path does not pin its inode or control shebang interpreters, loaders, plugins, and children selected through inherited environment variables or `PATH`.
+
+Invalid requests are pre-spawn contract errors. Spawn failures, non-zero exits, signal exits, timeouts, and cancellations remain structured process outcomes. The first observed terminal cause wins, including cancellation before a later asynchronous spawn error.
 
 ### Result model
 
@@ -246,7 +268,9 @@ CliExecutionResult
   stdout
   stderr
   truncation
-  full_output_path
+  capture
+  spool: not_needed | complete | partial | failed
+  process_group_cleanup
 ```
 
 The Pi adapter should turn this into concise model-facing text plus structured `details` for rendering and diagnostics.
@@ -265,6 +289,14 @@ The runner should retain stdout and stderr separately while applying one combine
 - The result should include the temporary path so the agent can inspect it deliberately.
 
 The truncation strategy should be deterministic and configurable where different CLIs need head-oriented or tail-oriented output.
+
+The v0.1b runner reserves framing space by limiting returned process text to 48 KiB and 1,980 logical lines. It uses one combined budget with a stable conceptual channel order of stdout followed by stderr: head selection gives stdout priority, while tail selection gives stderr priority. This is deterministic across OS pipe chunking and preserves separate stream fields and original/returned aggregate and per-stream counts. Each stream is decoded independently with a streaming UTF-8 decoder; invalid input uses replacement characters in model-facing text while raw byte counts remain available.
+
+Collection uses bounded head/tail reservoirs rather than buffering complete output. Raw prefix bytes remain bounded in memory until truncation or forced capture cutoff makes retention necessary. The runner then lazily creates private stdout/stderr sidecars, streams with backpressure, and assembles one owner-readable file with labeled stream sections.
+
+Combined raw spool payload is capped at 64 MiB. Capture cutoff or cap exhaustion returns a partial path and can never claim complete output. Setup, write, assembly, and sidecar-cleanup failures remain visible metadata without replacing process status. Package-owned retained output has a 512 MiB aggregate quota per temporary parent; assembly can temporarily use roughly twice the payload cap. Files can contain credentials or adversarial output and remain until the consumer calls `removeCliOutputSpool()`.
+
+The later Pi adapter will use tail output as its default unless registry-configurable output policy is introduced. It must still bound final rendered status, labels, notices, paths, and process text to Pi's full 50 KiB and 2,000-line ceiling.
 
 ## Local introspection
 
@@ -451,13 +483,28 @@ The initial idea is validated when:
 - Missing or invalid CLI entries do not prevent the extension from loading.
 - Startup performs no version, help, man, or network documentation calls.
 - Executable and argument boundaries are preserved without shell interpretation.
-- Cancellation and timeout stop the launched process tree reliably.
+- Cancellation, timeout, and direct-child exit clean ordinary descendants remaining in the original process group.
 - Large output cannot overwhelm model context.
 - Local help corresponds to the executable selected for execution.
 - Representative agent tasks select and use the native CLI tool reliably compared with a shell-only baseline.
 - The Pi extension contains adaptation and lifecycle logic, not core registry, process, or documentation behavior.
 
 ## Development roadmap
+
+### v0.1a — Registry and discovery foundation
+
+- Load and strictly validate bundled and user registry layers.
+- Merge complete definitions and explicit disable entries.
+- Resolve executable candidates to exact real paths without launching them.
+- Expose diagnostics without registering native tools.
+
+### v0.1b — Agent-independent bounded runner
+
+- Validate trusted execution requests and invoke configured top-level paths without a shell or runner-initiated `PATH` search.
+- Support structured exits, spawn errors, cancellation, timeout, and bounded POSIX process-group termination.
+- Capture separate streams under one deterministic model-facing budget.
+- Stream raw output to private capped spools and retain complete output only when truncation requires it.
+- Keep the Pi extension diagnostics-only while the core contract receives independent review.
 
 ### v0.1 — Reliable registry and execution
 
@@ -466,7 +513,7 @@ The initial idea is validated when:
 - Resolve configured binaries on `PATH`.
 - Register one native Pi tool per available CLI.
 - Execute explicit argument arrays without a shell.
-- Honor cancellation and enforce process-tree timeouts.
+- Honor cancellation and enforce bounded original-process-group cleanup.
 - Return structured execution metadata.
 - Truncate and spool large output.
 - Add human-facing status and refresh commands.

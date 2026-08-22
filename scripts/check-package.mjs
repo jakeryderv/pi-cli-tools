@@ -1,14 +1,13 @@
+import { posix } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const result = spawnSync(npmCommand, ["pack", "--dry-run", "--json"], {
 	encoding: "utf8",
 });
 
-if (result.error) {
-	throw result.error;
-}
-
+if (result.error) throw result.error;
 if (result.status !== 0) {
 	process.stderr.write(result.stderr);
 	process.exit(result.status ?? 1);
@@ -22,34 +21,41 @@ try {
 }
 
 const report = reports[0];
-
-if (!report || !Array.isArray(report.files)) {
-	throw new Error("npm pack did not return a file manifest");
-}
+if (!report || !Array.isArray(report.files)) throw new Error("npm pack did not return a file manifest");
 
 const packagedFiles = new Set(report.files.map((file) => file.path));
-const requiredFiles = [
+const expectedFiles = new Set([
 	"LICENSE",
 	"README.md",
 	"extensions/cli-tools.ts",
 	"package.json",
+	"src/errors.ts",
 	"src/introspect.ts",
+	"src/limits.ts",
+	"src/output.ts",
+	"src/process-lifecycle.ts",
 	"src/registry.ts",
+	"src/runner.ts",
+	"src/spool.ts",
 	"src/types.ts",
 	"tools/github.yaml",
-];
-const forbiddenPrefixes = [".github/", "coverage/", "docs/", "node_modules/", "scripts/", "tests/"];
+]);
 
-for (const requiredFile of requiredFiles) {
-	if (!packagedFiles.has(requiredFile)) {
-		throw new Error(`Required package file is missing: ${requiredFile}`);
+for (const expectedFile of expectedFiles) {
+	if (!packagedFiles.has(expectedFile)) throw new Error(`Required package file is missing: ${expectedFile}`);
+}
+for (const packagedFile of packagedFiles) {
+	if (!expectedFiles.has(packagedFile)) throw new Error(`Unexpected package file was included: ${packagedFile}`);
+}
+
+const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+for (const match of readme.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
+	const target = match[1];
+	if (!target || /^(?:https?:|mailto:|#)/u.test(target)) continue;
+	const packagedTarget = posix.normalize(posix.join(posix.dirname("README.md"), target.split("#", 1)[0] ?? ""));
+	if (!packagedFiles.has(packagedTarget)) {
+		throw new Error(`README relative link target is not packaged: ${target}`);
 	}
 }
 
-for (const file of packagedFiles) {
-	if (forbiddenPrefixes.some((prefix) => file.startsWith(prefix))) {
-		throw new Error(`Development-only file was included in the package: ${file}`);
-	}
-}
-
-process.stdout.write(`Package contents verified (${packagedFiles.size} files).\n`);
+process.stdout.write(`Package contents and README links verified (${String(packagedFiles.size)} files).\n`);
