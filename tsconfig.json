@@ -17,5 +17,5 @@
 		"skipLibCheck": true,
 		"types": ["node"]
 	},
-	"include": ["extensions/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+	"include": ["extensions/**/*.ts", "src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
 }

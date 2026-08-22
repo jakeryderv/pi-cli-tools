@@ -4,7 +4,14 @@ A Pi package for registering standalone command-line programs as native tools, w
 
 ## Status
 
-The project is currently scaffolded for implementation. The extension loads successfully but does not register CLI tools yet.
+The extension currently:
+
+- Loads and strictly validates bundled and user registry definitions.
+- Merges definitions by stable ID, including explicit user disable entries.
+- Resolves configured executable candidates to exact paths without launching them.
+- Exposes `/cli-tools` for human-facing registry and availability diagnostics.
+
+It does not register executable CLI tools or run configured programs yet.
 
 See the [project design outline](docs/pi-cli-tools-project-idea-outline.md) for the intended architecture, execution contract, security model, and roadmap.
 
@@ -24,6 +31,19 @@ Pi
 Pi extensions run with the user's full system permissions. When this project begins launching configured CLIs, those programs will be able to access the same files, environment variables, credentials, and network resources available to the Pi process.
 
 Shell-free invocation, timeouts, cancellation, and bounded output reduce specific risks; they do not sandbox a CLI or guarantee that an operation is non-destructive. See [SECURITY.md](SECURITY.md) and the design document's security model before using future releases with sensitive credentials.
+
+## Registry configuration
+
+Bundled definitions live in `tools/`. User definitions are loaded from Pi's agent directory under `cli-tools/`, canonically `~/.pi/agent/cli-tools/`. Each `.yaml`, `.yml`, or `.json` file contains one complete definition.
+
+A user definition with the same `id` completely replaces its bundled definition. To disable a bundled entry explicitly:
+
+```yaml
+id: github
+disabled: true
+```
+
+Missing user configuration is normal. Invalid files, duplicate IDs, duplicate tool names, missing executables, disabled entries, and resolved executable paths are reported by `/cli-tools` without entering model context.
 
 ## Requirements
 

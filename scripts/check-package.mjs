@@ -28,7 +28,16 @@ if (!report || !Array.isArray(report.files)) {
 }
 
 const packagedFiles = new Set(report.files.map((file) => file.path));
-const requiredFiles = ["LICENSE", "README.md", "extensions/cli-tools.ts", "package.json"];
+const requiredFiles = [
+	"LICENSE",
+	"README.md",
+	"extensions/cli-tools.ts",
+	"package.json",
+	"src/introspect.ts",
+	"src/registry.ts",
+	"src/types.ts",
+	"tools/github.yaml",
+];
 const forbiddenPrefixes = [".github/", "coverage/", "docs/", "node_modules/", "scripts/", "tests/"];
 
 for (const requiredFile of requiredFiles) {
