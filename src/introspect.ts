@@ -369,6 +369,21 @@ export class LocalIntrospectionService {
 				aggregateSignal,
 			);
 			const [version, docs] = await Promise.all([versionPromise, docsPromise]);
+			if (isSignalAborted(aggregateSignal)) {
+				this.#recordOutcome(definition.id, version);
+				for (const attempt of docs.attempts) this.#recordOutcome(definition.id, attempt);
+				return {
+					status: "failed",
+					registryId: definition.id,
+					toolName: definition.tool_name,
+					requestedSubcommand: validation.subcommand,
+					version,
+					documentation: docs.documentation,
+					attempts: [version, ...docs.attempts],
+					definitionSha256,
+					executableIdentitySha256,
+				};
+			}
 			const finalIdentity = await fingerprintExecutable(request.discovery.resolution.executablePath, aggregateSignal);
 			if (!finalIdentity || hashCanonicalValue(finalIdentity) !== executableIdentitySha256) {
 				const identityFailure = identityFailureFromOutcome(docs.documentation);
@@ -646,7 +661,16 @@ export class LocalIntrospectionService {
 				return outcome;
 			});
 		} catch (error) {
-			if (error instanceof LocalIntrospectionOutcomeError) return error.outcome;
+			if (error instanceof LocalIntrospectionOutcomeError) {
+				if (
+					error.outcome.status === "failed" &&
+					error.outcome.code === "cancelled" &&
+					failureCodeForAbort(signal) === "timed_out"
+				) {
+					return { ...error.outcome, code: "timed_out" };
+				}
+				return error.outcome;
+			}
 			if (error instanceof LocalIntrospectionCacheConcurrencyError) {
 				return failure(configured.source, "concurrency_limit", command);
 			}
@@ -873,6 +897,10 @@ function createManEnvironment(host: Readonly<NodeJS.ProcessEnv>): NodeJS.Process
 	};
 	if (typeof host.PATH === "string") environment.PATH = host.PATH;
 	return environment;
+}
+
+function isSignalAborted(signal: AbortSignal): boolean {
+	return signal.aborted;
 }
 
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {

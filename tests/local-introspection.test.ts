@@ -117,7 +117,7 @@ describe("focused local introspection cache", () => {
 		).rejects.toThrow("concurrent-flight limit");
 		expect(cache.stats().inFlight).toBe(1);
 		rejectLoader?.(new Error("drained"));
-		await expect(pending).rejects.toThrow("waiter cancelled");
+		await expect(pending).rejects.toThrow("drained");
 		const admitted = await cache.getOrLoad(cacheKey("new", "help", []), undefined, () =>
 			Promise.resolve(success("help", "new")),
 		);
@@ -176,7 +176,7 @@ describe("focused local introspection cache", () => {
 		await expect(first).rejects.toThrow("waiter cancelled");
 		expect(flightSignal?.aborted).toBe(false);
 		secondController.abort();
-		await expect(second).rejects.toThrow("waiter cancelled");
+		await expect(second).rejects.toThrow("aborted flight");
 		expect(flightSignal?.aborted).toBe(true);
 		expect(cache.stats().inFlight).toBe(0);
 		const fresh = await cache.getOrLoad(key, undefined, () => {

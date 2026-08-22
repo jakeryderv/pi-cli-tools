@@ -256,8 +256,8 @@ export class LocalIntrospectionCache {
 						() => {
 							reject(new LocalIntrospectionCacheWaiterCancelledError());
 						},
-						() => {
-							reject(new LocalIntrospectionCacheWaiterCancelledError());
+						(error: unknown) => {
+							reject(error instanceof Error ? error : new Error(String(error)));
 						},
 					);
 					return;

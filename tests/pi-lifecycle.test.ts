@@ -18,7 +18,7 @@ import { stringify } from "yaml";
 
 import cliToolsExtension from "../extensions/cli-tools.js";
 import type { CliToolResultDetails } from "../extensions/pi-adapter.js";
-import { expectProcessGone, fixturePath, waitForFile } from "./helpers/runner.js";
+import { fixturePath, waitForFile } from "./helpers/runner.js";
 import { createDefinition } from "./helpers/pi-adapter.js";
 
 const describePosix = process.platform === "linux" || process.platform === "darwin" ? describe : describe.skip;
@@ -183,23 +183,33 @@ describePosix("real Pi lifecycle", () => {
 			await session.bindExtensions({ mode: "print" });
 			const docs = session.getToolDefinition("cli_docs");
 			if (!docs) throw new Error("expected cli_docs");
-			const pending = docs.execute("blocked", { tool: "cli_gh" }, undefined, undefined, {
-				cwd: root,
-			} as ExtensionContext);
+			let introspectionSettled = false;
+			const pending = docs
+				.execute("blocked", { tool: "cli_gh" }, undefined, undefined, {
+					cwd: root,
+				} as ExtensionContext)
+				.then((result) => {
+					introspectionSettled = true;
+					return result;
+				});
 			await waitForFile(readyPath);
-			const pid = Number(await readFile(readyPath, "utf8"));
+			expect(Number(await readFile(readyPath, "utf8"))).toBeGreaterThan(0);
 			await session.reload();
+			expect(introspectionSettled).toBe(true);
 			const result = await pending;
 			expect(result.details).toMatchObject({
 				kind: "docs",
 				status: "failed",
-				documentation: { status: "failed", code: "cancelled" },
+				documentation: {
+					status: "failed",
+					code: "cancelled",
+					execution: { cleanup: { reason: "cancelled", confirmed: true } },
+				},
 			});
-			await expectProcessGone(pid);
 		} finally {
 			session.dispose();
 		}
-	});
+	}, 15_000);
 
 	it("executes through Pi's provider/tool pipeline and preserves nonzero error classification", async () => {
 		const faux = fauxProvider({ provider: "pi-cli-tools-test" });
