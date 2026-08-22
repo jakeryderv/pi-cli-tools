@@ -15,12 +15,15 @@ concurrency:
 
 jobs:
   verify:
-    name: Node ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Node ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
         node-version:
           - 22.19.0
           - 24.x
